@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/BurntSushi/toml"
@@ -855,11 +857,41 @@ var defaultUserConfig = UserConfig{
 	MCPs:  make(map[string]MCPDef),
 }
 
+var sshHostPattern = regexp.MustCompile(`^(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9._:%-]+$`)
+
 // Cache for user config (loaded once per session)
 var (
 	userConfigCache   *UserConfig
 	userConfigCacheMu sync.RWMutex
 )
+
+func validateHostConfigs(hosts map[string]HostConfig) error {
+	for name, host := range hosts {
+		sshHost := strings.TrimSpace(host.SSHHost)
+		if sshHost == "" {
+			continue
+		}
+		if err := validateSSHHost(sshHost); err != nil {
+			return fmt.Errorf("hosts.%s.ssh_host %q: %w", name, host.SSHHost, err)
+		}
+	}
+	return nil
+}
+
+func validateSSHHost(sshHost string) error {
+	if !sshHostPattern.MatchString(sshHost) {
+		return fmt.Errorf("must contain only letters, digits, '.', '_', '-', ':', and optional user@host form")
+	}
+
+	hostPart := sshHost
+	if at := strings.LastIndex(sshHost, "@"); at >= 0 {
+		hostPart = sshHost[at+1:]
+	}
+	if strings.HasPrefix(hostPart, "-") {
+		return fmt.Errorf("must not start with '-'")
+	}
+	return nil
+}
 
 // GetUserConfigPath returns the path to the user config file
 func GetUserConfigPath() (string, error) {
@@ -916,6 +948,10 @@ func LoadUserConfig() (*UserConfig, error) {
 	}
 	if config.MCPs == nil {
 		config.MCPs = make(map[string]MCPDef)
+	}
+	if err := validateHostConfigs(config.Hosts); err != nil {
+		userConfigCache = &defaultUserConfig
+		return userConfigCache, fmt.Errorf("config.toml validation error: %w", err)
 	}
 
 	userConfigCache = &config

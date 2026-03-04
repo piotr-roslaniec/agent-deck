@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -275,6 +276,71 @@ default_path = "/srv/dev"
 	}
 	if host.DefaultPath != "/srv/dev" {
 		t.Fatalf("DefaultPath = %q, want %q", host.DefaultPath, "/srv/dev")
+	}
+}
+
+func TestLoadUserConfig_RejectsUnsafeSSHHost(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("Failed to create agent-deck dir: %v", err)
+	}
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	content := `
+[hosts.dev]
+ssh_host = "pi@devbox; touch /tmp/pwned"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	ClearUserConfigCache()
+	_, err := LoadUserConfig()
+	if err == nil {
+		t.Fatal("LoadUserConfig should fail for unsafe ssh_host")
+	}
+	if !strings.Contains(err.Error(), "hosts.dev.ssh_host") {
+		t.Fatalf("expected hosts.dev.ssh_host in error, got: %v", err)
+	}
+}
+
+func TestLoadUserConfig_AllowsSafeSSHHost(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("Failed to create agent-deck dir: %v", err)
+	}
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	content := `
+[hosts.dev]
+ssh_host = "pi@devbox"
+default_path = "/srv/dev"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	ClearUserConfigCache()
+	cfg, err := LoadUserConfig()
+	if err != nil {
+		t.Fatalf("LoadUserConfig should accept safe ssh_host: %v", err)
+	}
+	host, ok := cfg.Hosts["dev"]
+	if !ok {
+		t.Fatal("expected hosts.dev to be present")
+	}
+	if host.SSHHost != "pi@devbox" {
+		t.Fatalf("SSHHost = %q, want %q", host.SSHHost, "pi@devbox")
 	}
 }
 
