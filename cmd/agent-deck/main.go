@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -114,6 +115,14 @@ func promptForUpdate() bool {
 	return true
 }
 
+func emitConfigPermissionWarning(errOut io.Writer) {
+	warning, err := session.GetUserConfigPermissionWarning()
+	if err != nil || warning == "" {
+		return
+	}
+	fmt.Fprintf(errOut, "Warning: %s\n", warning)
+}
+
 // initColorProfile configures lipgloss color profile based on terminal capabilities.
 // Prefers TrueColor for best visuals, falls back to ANSI256 for compatibility.
 func initColorProfile() {
@@ -190,6 +199,8 @@ func main() {
 		// resolve consistently across all command paths in this process.
 		_ = os.Setenv("AGENTDECK_PROFILE", profile)
 	}
+
+	emitConfigPermissionWarning(os.Stderr)
 
 	var webEnabled bool
 	var webArgs []string

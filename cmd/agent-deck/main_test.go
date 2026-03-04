@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -175,5 +178,59 @@ func TestIsDuplicateSession(t *testing.T) {
 				t.Errorf("isDuplicateSession() returned instance when expecting no duplicate")
 			}
 		})
+	}
+}
+
+func TestEmitConfigPermissionWarning(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("default_tool = \"claude\"\n"), 0o644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	var stderr bytes.Buffer
+	emitConfigPermissionWarning(&stderr)
+
+	out := stderr.String()
+	if out == "" {
+		t.Fatal("expected warning to be emitted for permissive config mode")
+	}
+	if !strings.Contains(out, "Warning:") {
+		t.Fatalf("expected warning prefix, got: %q", out)
+	}
+	if !strings.Contains(out, "0600") {
+		t.Fatalf("expected output to mention 0600 recommendation, got: %q", out)
+	}
+}
+
+func TestEmitConfigPermissionWarning_NoWarningForSecureConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("default_tool = \"claude\"\n"), 0o600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	var stderr bytes.Buffer
+	emitConfigPermissionWarning(&stderr)
+	if stderr.String() != "" {
+		t.Fatalf("expected no warning for secure config mode, got: %q", stderr.String())
 	}
 }

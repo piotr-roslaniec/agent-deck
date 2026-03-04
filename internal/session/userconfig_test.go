@@ -451,6 +451,72 @@ probe_cache_ttl = "not-a-duration"
 	}
 }
 
+func TestGetUserConfigPermissionWarning_MissingFile(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+
+	warning, err := GetUserConfigPermissionWarning()
+	if err != nil {
+		t.Fatalf("GetUserConfigPermissionWarning returned error: %v", err)
+	}
+	if warning != "" {
+		t.Fatalf("expected no warning for missing config, got: %q", warning)
+	}
+}
+
+func TestGetUserConfigPermissionWarning_SecureMode(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("default_tool = \"claude\"\n"), 0o600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	warning, err := GetUserConfigPermissionWarning()
+	if err != nil {
+		t.Fatalf("GetUserConfigPermissionWarning returned error: %v", err)
+	}
+	if warning != "" {
+		t.Fatalf("expected no warning for 0600 config, got: %q", warning)
+	}
+}
+
+func TestGetUserConfigPermissionWarning_PermissiveMode(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("default_tool = \"claude\"\n"), 0o644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	warning, err := GetUserConfigPermissionWarning()
+	if err != nil {
+		t.Fatalf("GetUserConfigPermissionWarning returned error: %v", err)
+	}
+	if warning == "" {
+		t.Fatal("expected warning for permissive config mode")
+	}
+	if !strings.Contains(warning, "0600") {
+		t.Fatalf("expected warning to mention 0600 recommendation, got: %q", warning)
+	}
+}
+
 func TestGetTheme_Default(t *testing.T) {
 	// Setup: use temp directory with no config
 	tempDir := t.TempDir()

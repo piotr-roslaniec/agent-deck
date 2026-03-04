@@ -949,6 +949,33 @@ func GetUserConfigPath() (string, error) {
 	return filepath.Join(dir, UserConfigFileName), nil
 }
 
+// GetUserConfigPermissionWarning returns a warning message when config.toml
+// permissions are too permissive. Empty string means no warning.
+func GetUserConfigPermissionWarning() (string, error) {
+	configPath, err := GetUserConfigPath()
+	if err != nil {
+		return "", err
+	}
+
+	info, err := os.Stat(configPath)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+
+	perms := info.Mode().Perm()
+	if perms&0o077 != 0 {
+		return fmt.Sprintf(
+			"config file %s has permissions %04o; recommended 0600 to protect SSH host configuration",
+			configPath,
+			perms,
+		), nil
+	}
+	return "", nil
+}
+
 // LoadUserConfig loads the user configuration from TOML file
 // Returns cached config after first load
 func LoadUserConfig() (*UserConfig, error) {
