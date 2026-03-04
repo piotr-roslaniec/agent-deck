@@ -458,11 +458,37 @@ type ProxyInfo struct {
 	Clients    int
 }
 
+type socketDiscoveryDeps struct {
+	glob     func(pattern string) ([]string, error)
+	isAlive  func(socketPath string) bool
+	remove   func(path string) error
+	register func(name, socketPath string) error
+}
+
 // DiscoverExistingSockets scans for existing pool sockets owned by another agent-deck instance
 // and registers them so this instance can use them too. Returns count of discovered sockets.
 func (p *Pool) DiscoverExistingSockets() int {
-	pattern := filepath.Join("/tmp", "agentdeck-mcp-*.sock")
-	matches, err := filepath.Glob(pattern)
+	return p.discoverExistingSocketsWith(
+		filepath.Join("/tmp", "agentdeck-mcp-*.sock"),
+		socketDiscoveryDeps{},
+	)
+}
+
+func (p *Pool) discoverExistingSocketsWith(pattern string, deps socketDiscoveryDeps) int {
+	if deps.glob == nil {
+		deps.glob = filepath.Glob
+	}
+	if deps.isAlive == nil {
+		deps.isAlive = isSocketAliveCheck
+	}
+	if deps.remove == nil {
+		deps.remove = os.Remove
+	}
+	if deps.register == nil {
+		deps.register = p.RegisterExternalSocket
+	}
+
+	matches, err := deps.glob(pattern)
 	if err != nil {
 		poolLog.Warn("socket_scan_failed", slog.String("error", err.Error()))
 		return 0
@@ -471,12 +497,10 @@ func (p *Pool) DiscoverExistingSockets() int {
 	discovered := 0
 	for _, socketPath := range matches {
 		// Extract MCP name from socket path: /tmp/agentdeck-mcp-{name}.sock
-		base := filepath.Base(socketPath)
-		if !strings.HasPrefix(base, "agentdeck-mcp-") || !strings.HasSuffix(base, ".sock") {
+		name, ok := mcpNameFromSocketPath(socketPath)
+		if !ok {
 			continue
 		}
-		name := strings.TrimPrefix(base, "agentdeck-mcp-")
-		name = strings.TrimSuffix(name, ".sock")
 
 		// Skip if we already have this MCP
 		p.mu.RLock()
@@ -487,14 +511,22 @@ func (p *Pool) DiscoverExistingSockets() int {
 		}
 
 		// Check if socket is alive (owned by another instance)
-		if !isSocketAliveCheck(socketPath) {
-			poolLog.Debug("stale_socket_removed", slog.String("mcp", name))
-			os.Remove(socketPath)
+		if !deps.isAlive(socketPath) {
+			if err := deps.remove(socketPath); err != nil && !os.IsNotExist(err) {
+				poolLog.Warn("stale_socket_cleanup_failed",
+					slog.String("mcp", name),
+					slog.String("path", socketPath),
+					slog.String("error", err.Error()))
+			} else {
+				poolLog.Debug("stale_socket_removed",
+					slog.String("mcp", name),
+					slog.String("path", socketPath))
+			}
 			continue
 		}
 
 		// Register the external socket
-		if err := p.RegisterExternalSocket(name, socketPath); err != nil {
+		if err := deps.register(name, socketPath); err != nil {
 			poolLog.Warn("external_register_failed", slog.String("mcp", name), slog.String("error", err.Error()))
 			continue
 		}
@@ -507,6 +539,20 @@ func (p *Pool) DiscoverExistingSockets() int {
 		poolLog.Info("discovery_complete", slog.Int("count", discovered))
 	}
 	return discovered
+}
+
+func mcpNameFromSocketPath(socketPath string) (string, bool) {
+	base := filepath.Base(socketPath)
+	if !strings.HasPrefix(base, "agentdeck-mcp-") || !strings.HasSuffix(base, ".sock") {
+		return "", false
+	}
+
+	name := strings.TrimPrefix(base, "agentdeck-mcp-")
+	name = strings.TrimSuffix(name, ".sock")
+	if name == "" {
+		return "", false
+	}
+	return name, true
 }
 
 // isSocketAliveCheck checks if a Unix socket exists and is accepting connections

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -222,5 +224,97 @@ func TestResetPermanentlyFailedProxy_Success(t *testing.T) {
 	}
 	if restartWindowLen != 1 {
 		t.Fatalf("expected fresh restart window to contain only new attempt, got %d entries", restartWindowLen)
+	}
+}
+
+func TestDiscoverExistingSocketsWith_RemovesStaleSocketFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	staleSocketPath := filepath.Join(tmpDir, "agentdeck-mcp-stale.sock")
+	if err := os.WriteFile(staleSocketPath, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("failed to create stale socket placeholder: %v", err)
+	}
+
+	pool := &Pool{proxies: map[string]*SocketProxy{}}
+	discovered := pool.discoverExistingSocketsWith("ignored", socketDiscoveryDeps{
+		glob: func(pattern string) ([]string, error) {
+			return []string{staleSocketPath}, nil
+		},
+		isAlive: func(socketPath string) bool {
+			return false
+		},
+		register: func(name, socketPath string) error {
+			t.Fatalf("register should not be called for stale socket %s", socketPath)
+			return nil
+		},
+	})
+
+	if discovered != 0 {
+		t.Fatalf("expected no discovered sockets, got %d", discovered)
+	}
+	if _, err := os.Stat(staleSocketPath); !os.IsNotExist(err) {
+		t.Fatalf("expected stale socket file to be removed, stat err=%v", err)
+	}
+}
+
+func TestDiscoverExistingSocketsWith_DiscoversLiveAndSkipsExisting(t *testing.T) {
+	tmpDir := t.TempDir()
+	staleSocketPath := filepath.Join(tmpDir, "agentdeck-mcp-stale.sock")
+	existingSocketPath := filepath.Join(tmpDir, "agentdeck-mcp-existing.sock")
+	liveSocketPath := filepath.Join(tmpDir, "agentdeck-mcp-live.sock")
+	invalidSocketPath := filepath.Join(tmpDir, "random.sock")
+
+	for _, path := range []string{staleSocketPath, existingSocketPath, liveSocketPath} {
+		if err := os.WriteFile(path, []byte("sock"), 0o600); err != nil {
+			t.Fatalf("failed to create socket placeholder %s: %v", path, err)
+		}
+	}
+
+	pool := &Pool{
+		proxies: map[string]*SocketProxy{
+			"existing": {},
+		},
+	}
+
+	var removedPaths []string
+	type registerCall struct {
+		name string
+		path string
+	}
+	var registerCalls []registerCall
+
+	discovered := pool.discoverExistingSocketsWith("custom-pattern", socketDiscoveryDeps{
+		glob: func(pattern string) ([]string, error) {
+			if pattern != "custom-pattern" {
+				t.Fatalf("unexpected pattern %q", pattern)
+			}
+			return []string{invalidSocketPath, staleSocketPath, existingSocketPath, liveSocketPath}, nil
+		},
+		isAlive: func(socketPath string) bool {
+			return socketPath == existingSocketPath || socketPath == liveSocketPath
+		},
+		remove: func(path string) error {
+			removedPaths = append(removedPaths, path)
+			return nil
+		},
+		register: func(name, socketPath string) error {
+			registerCalls = append(registerCalls, registerCall{name: name, path: socketPath})
+			return nil
+		},
+	})
+
+	if discovered != 1 {
+		t.Fatalf("expected exactly one discovered socket, got %d", discovered)
+	}
+	if len(removedPaths) != 1 || removedPaths[0] != staleSocketPath {
+		t.Fatalf("expected only stale socket removal, got %v", removedPaths)
+	}
+	if len(registerCalls) != 1 {
+		t.Fatalf("expected one live socket registration, got %d", len(registerCalls))
+	}
+	if registerCalls[0].name != "live" || registerCalls[0].path != liveSocketPath {
+		t.Fatalf("expected live socket registration, got %+v", registerCalls[0])
+	}
+	if _, err := os.Stat(liveSocketPath); err != nil {
+		t.Fatalf("expected live socket placeholder to be preserved, stat err=%v", err)
 	}
 }
