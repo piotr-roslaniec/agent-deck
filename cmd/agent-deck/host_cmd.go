@@ -13,6 +13,7 @@ import (
 )
 
 func handleHost(profile string, args []string) {
+	// Kept for signature consistency with other handlers; host subcommands do not use profile yet.
 	_ = profile
 	if len(args) == 0 {
 		printHostHelp()
