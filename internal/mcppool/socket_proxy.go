@@ -20,6 +20,10 @@ import (
 
 var proxyLog = logging.ForComponent(logging.CompPool)
 
+// socketProxyPingTimeout controls how long HealthCheck waits for a JSON-RPC ping
+// response over the Unix socket. Tests override this for deterministic speed.
+var socketProxyPingTimeout = 5 * time.Second
+
 // SocketProxy wraps a stdio MCP process with a Unix socket
 type SocketProxy struct {
 	name       string
@@ -492,14 +496,68 @@ func (p *SocketProxy) GetClientCount() int {
 }
 
 func (p *SocketProxy) HealthCheck() error {
-	if p.mcpProcess == nil {
-		return fmt.Errorf("process not running")
+	if p.mcpProcess == nil || p.mcpProcess.Process == nil {
+		return fmt.Errorf("mcp process is not running for %s", p.name)
 	}
 	if err := p.mcpProcess.Process.Signal(syscall.Signal(0)); err != nil {
-		return err
+		return fmt.Errorf("mcp process signal check failed for %s: %w", p.name, err)
 	}
 	if _, err := os.Stat(p.socketPath); err != nil {
-		return err
+		return fmt.Errorf("unix socket check failed for %s (%s): %w", p.name, p.socketPath, err)
 	}
-	return nil
+
+	timeout := socketProxyPingTimeout
+	conn, err := net.DialTimeout("unix", p.socketPath, timeout)
+	if err != nil {
+		return fmt.Errorf("failed to dial unix socket for %s health ping (%s): %w", p.name, p.socketPath, err)
+	}
+	defer conn.Close()
+
+	pingID := fmt.Sprintf("healthcheck-%d", time.Now().UnixNano())
+	req := JSONRPCRequest{
+		JSONRPC: "2.0",
+		Method:  "ping",
+		ID:      pingID,
+	}
+	reqBytes, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("failed to marshal health ping request for %s: %w", p.name, err)
+	}
+	reqBytes = append(reqBytes, '\n')
+
+	deadline := time.Now().Add(timeout)
+	if err := conn.SetWriteDeadline(deadline); err != nil {
+		return fmt.Errorf("failed to set health ping write deadline for %s: %w", p.name, err)
+	}
+	if _, err := conn.Write(reqBytes); err != nil {
+		return fmt.Errorf("failed to send health ping for %s: %w", p.name, err)
+	}
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return fmt.Errorf("failed to set health ping read deadline for %s: %w", p.name, err)
+	}
+
+	scanner := bufio.NewScanner(conn)
+	scannerBuf := configureScannerWithPooledBuffer(scanner)
+	defer releaseScannerBuffer(scannerBuf)
+
+	for scanner.Scan() {
+		var resp JSONRPCResponse
+		if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+			continue
+		}
+
+		// A response with matching ID proves liveness, regardless of result vs error.
+		if fmt.Sprint(resp.ID) == pingID {
+			return nil
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			return fmt.Errorf("timed out waiting for health ping response from %s after %v", p.name, timeout)
+		}
+		return fmt.Errorf("failed reading health ping response for %s: %w", p.name, err)
+	}
+
+	return fmt.Errorf("socket closed before health ping response was received for %s", p.name)
 }

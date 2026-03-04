@@ -2,9 +2,14 @@ package mcppool
 
 import (
 	"bufio"
+	"encoding/json"
 	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAcquireScannerBufferReturnsConfiguredSize(t *testing.T) {
@@ -83,5 +88,126 @@ func TestBroadcastResponsesClosesClientsOnFailure(t *testing.T) {
 	proxy.clientsMu.RUnlock()
 	if count != 0 {
 		t.Errorf("Expected 0 clients after failure, got %d", count)
+	}
+}
+
+func TestSocketProxyHealthCheckAcceptsMatchingErrorResponse(t *testing.T) {
+	oldTimeout := socketProxyPingTimeout
+	socketProxyPingTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { socketProxyPingTimeout = oldTimeout })
+
+	socketPath := filepath.Join(t.TempDir(), "healthcheck.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("failed to create test socket: %v", err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer conn.Close()
+
+		scanner := bufio.NewScanner(conn)
+		if !scanner.Scan() {
+			if scanErr := scanner.Err(); scanErr != nil {
+				serverDone <- scanErr
+				return
+			}
+			serverDone <- os.ErrInvalid
+			return
+		}
+
+		var req JSONRPCRequest
+		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
+			serverDone <- err
+			return
+		}
+		if req.Method != "ping" {
+			serverDone <- os.ErrInvalid
+			return
+		}
+
+		resp := JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error: map[string]any{
+				"code":    -32000,
+				"message": "test error response still means server is alive",
+			},
+		}
+		respBytes, err := json.Marshal(resp)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if _, err := conn.Write(append(respBytes, '\n')); err != nil {
+			serverDone <- err
+			return
+		}
+
+		serverDone <- nil
+	}()
+
+	proxy := newHealthCheckTestProxy(t, socketPath)
+	if err := proxy.HealthCheck(); err != nil {
+		t.Fatalf("expected health check success, got error: %v", err)
+	}
+
+	if err := <-serverDone; err != nil {
+		t.Fatalf("test server error: %v", err)
+	}
+}
+
+func TestSocketProxyHealthCheckPingTimeout(t *testing.T) {
+	oldTimeout := socketProxyPingTimeout
+	socketProxyPingTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { socketProxyPingTimeout = oldTimeout })
+
+	socketPath := filepath.Join(t.TempDir(), "healthcheck-timeout.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("failed to create test socket: %v", err)
+	}
+	defer listener.Close()
+
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		scanner := bufio.NewScanner(conn)
+		_ = scanner.Scan()
+		time.Sleep(250 * time.Millisecond)
+	}()
+
+	proxy := newHealthCheckTestProxy(t, socketPath)
+	err = proxy.HealthCheck()
+	if err == nil {
+		t.Fatal("expected health check timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out waiting for health ping response") {
+		t.Fatalf("expected timeout error, got: %v", err)
+	}
+}
+
+func newHealthCheckTestProxy(t *testing.T, socketPath string) *SocketProxy {
+	t.Helper()
+
+	proc, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatalf("failed to find current process: %v", err)
+	}
+
+	return &SocketProxy{
+		name:       "test-proxy",
+		socketPath: socketPath,
+		mcpProcess: &exec.Cmd{Process: proc},
 	}
 }
