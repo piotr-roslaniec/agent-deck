@@ -83,8 +83,11 @@ type InstanceData struct {
 	LoadedMCPNames []string `json:"loaded_mcp_names,omitempty"`
 
 	// SSH remote support
-	SSHHost       string `json:"ssh_host,omitempty"`
-	SSHRemotePath string `json:"ssh_remote_path,omitempty"`
+	SSHHost         string `json:"ssh_host,omitempty"`
+	SSHRemotePath   string `json:"ssh_remote_path,omitempty"`
+	Adopted         bool   `json:"adopted,omitempty"`
+	AdoptedTmuxName string `json:"adopted_tmux_name,omitempty"`
+	AdoptedSSHHost  string `json:"adopted_ssh_host,omitempty"`
 }
 
 // GroupData represents serializable group data
@@ -267,6 +270,7 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			inst.LatestPrompt, inst.LoadedMCPNames,
 			inst.ToolOptionsJSON,
 			inst.SSHHost, inst.SSHRemotePath,
+			inst.Adopted, inst.AdoptedTmuxName, inst.AdoptedSSHHost,
 		)
 
 		rows[i] = &statedb.InstanceRow{
@@ -407,7 +411,8 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			codexSID, codexAt,
 			latestPrompt, loadedMCPs,
 			toolOpts,
-			sshHost2, sshRemotePath2 := statedb.UnmarshalToolData(r.ToolData)
+			sshHost2, sshRemotePath2,
+			adopted, adoptedTmuxName, adoptedSSHHost := statedb.UnmarshalToolData(r.ToolData)
 
 		instances[i] = &InstanceData{
 			ID:                 r.ID,
@@ -441,6 +446,9 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			LoadedMCPNames:     loadedMCPs,
 			SSHHost:            sshHost2,
 			SSHRemotePath:      sshRemotePath2,
+			Adopted:            adopted,
+			AdoptedTmuxName:    adoptedTmuxName,
+			AdoptedSSHHost:     adoptedSSHHost,
 		}
 	}
 
@@ -492,7 +500,8 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			codexSID, codexAt,
 			latestPrompt, loadedMCPs,
 			toolOpts,
-			sshHost, sshRemotePath := statedb.UnmarshalToolData(r.ToolData)
+			sshHost, sshRemotePath,
+			adopted, adoptedTmuxName, adoptedSSHHost := statedb.UnmarshalToolData(r.ToolData)
 
 		data.Instances[i] = &InstanceData{
 			ID:                 r.ID,
@@ -526,6 +535,9 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			LoadedMCPNames:     loadedMCPs,
 			SSHHost:            sshHost,
 			SSHRemotePath:      sshRemotePath,
+			Adopted:            adopted,
+			AdoptedTmuxName:    adoptedTmuxName,
+			AdoptedSSHHost:     adoptedSSHHost,
 		}
 	}
 
@@ -688,7 +700,10 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 		// Expand tilde in project path (handles paths like ~/project saved from UI)
 		// fixMalformedTildePath handles the case where the textinput suggestion
 		// appended instead of replacing, producing "/some/path~/actual/path".
-		projectPath := ExpandPath(fixMalformedTildePath(instData.ProjectPath))
+		projectPath := fixMalformedTildePath(instData.ProjectPath)
+		if !instData.Adopted {
+			projectPath = ExpandPath(projectPath)
+		}
 
 		inst := &Instance{
 			ID:                 instData.ID,
@@ -721,6 +736,9 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			LoadedMCPNames:     instData.LoadedMCPNames,
 			SSHHost:            instData.SSHHost,
 			SSHRemotePath:      instData.SSHRemotePath,
+			Adopted:            instData.Adopted,
+			AdoptedTmuxName:    instData.AdoptedTmuxName,
+			AdoptedSSHHost:     instData.AdoptedSSHHost,
 			tmuxSession:        tmuxSess,
 		}
 

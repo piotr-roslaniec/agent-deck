@@ -2510,6 +2510,43 @@ func TestCaptureRemotePaneQuotesSessionName(t *testing.T) {
 	)
 }
 
+func TestRemoteSessionExists(t *testing.T) {
+	orig := sshCommand
+	t.Cleanup(func() {
+		sshCommand = orig
+	})
+
+	sshCommand = func(args ...string) *exec.Cmd {
+		return exec.Command("sh", "-c", "exit 0")
+	}
+	exists, err := RemoteSessionExists("devbox", "legacy")
+	require.NoError(t, err)
+	assert.True(t, exists)
+
+	sshCommand = func(args ...string) *exec.Cmd {
+		return exec.Command("sh", "-c", "echo \"can't find session: legacy\" >&2; exit 1")
+	}
+	exists, err = RemoteSessionExists("devbox", "legacy")
+	require.NoError(t, err)
+	assert.False(t, exists)
+}
+
+func TestStripRemoteANSIOSC(t *testing.T) {
+	input := "\x1b]0;Title\x07\x1b[32muser@host:/srv/app\x1b[0m \x1b(B$ "
+	got := stripRemoteANSIOSC(input)
+	assert.Equal(t, "user@host:/srv/app $ ", got)
+}
+
+func TestDetectRemotePromptPath(t *testing.T) {
+	content := "\x1b]0;Title\x07noise\n\x1b[32muser@host:/srv/app\x1b[0m$ "
+	got := detectRemotePromptPath(content)
+	assert.Equal(t, "/srv/app", got)
+
+	content = "\x1b]133;A\x1b\\\nrandom\n"
+	got = detectRemotePromptPath(content)
+	assert.Equal(t, "", got)
+}
+
 // --- splitIntoChunks tests ---
 
 func TestSplitIntoChunks_SmallContent(t *testing.T) {

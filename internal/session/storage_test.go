@@ -256,3 +256,62 @@ func TestStorageSaveWithGroups_DedupsClaudeSessionIDs(t *testing.T) {
 		t.Fatalf("db newer session ID = %q, want empty", byID["new"].ClaudeSessionID)
 	}
 }
+
+func TestStorageAdoptedFieldsRoundTrip(t *testing.T) {
+	s := newTestStorage(t)
+
+	original := NewAdoptedInstance(
+		"adopted-remote",
+		"~/remote/project",
+		"remote",
+		"claude",
+		"pi@devbox",
+		"legacy-claude",
+	)
+	original.Status = StatusWaiting
+
+	if err := s.SaveWithGroups([]*Instance{original}, nil); err != nil {
+		t.Fatalf("SaveWithGroups failed: %v", err)
+	}
+
+	lite, _, err := s.LoadLite()
+	if err != nil {
+		t.Fatalf("LoadLite failed: %v", err)
+	}
+	if len(lite) != 1 {
+		t.Fatalf("LoadLite returned %d rows, want 1", len(lite))
+	}
+	if !lite[0].Adopted {
+		t.Fatal("LoadLite: expected adopted=true")
+	}
+	if lite[0].AdoptedSSHHost != "pi@devbox" {
+		t.Fatalf("LoadLite AdoptedSSHHost = %q, want %q", lite[0].AdoptedSSHHost, "pi@devbox")
+	}
+	if lite[0].AdoptedTmuxName != "legacy-claude" {
+		t.Fatalf("LoadLite AdoptedTmuxName = %q, want %q", lite[0].AdoptedTmuxName, "legacy-claude")
+	}
+
+	loaded, _, err := s.LoadWithGroups()
+	if err != nil {
+		t.Fatalf("LoadWithGroups failed: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("LoadWithGroups returned %d rows, want 1", len(loaded))
+	}
+	got := loaded[0]
+	if !got.Adopted {
+		t.Fatal("expected adopted=true after full load")
+	}
+	if got.AdoptedSSHHost != "pi@devbox" {
+		t.Fatalf("AdoptedSSHHost = %q, want %q", got.AdoptedSSHHost, "pi@devbox")
+	}
+	if got.AdoptedTmuxName != "legacy-claude" {
+		t.Fatalf("AdoptedTmuxName = %q, want %q", got.AdoptedTmuxName, "legacy-claude")
+	}
+	if got.IsSSH() {
+		t.Fatal("adopted sessions must not report IsSSH=true")
+	}
+	if got.ProjectPath != "~/remote/project" {
+		t.Fatalf("ProjectPath = %q, want %q (must not expand remote ~)", got.ProjectPath, "~/remote/project")
+	}
+}

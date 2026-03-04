@@ -102,6 +102,64 @@ func TestSaveLoadInstances(t *testing.T) {
 	}
 }
 
+func TestToolDataRoundTripWithAdoptedFields(t *testing.T) {
+	toolData := MarshalToolData(
+		"claude-id", time.Unix(10, 0),
+		"gem-id", time.Unix(11, 0),
+		nil, "gemini-2.5",
+		"open-id", time.Unix(12, 0),
+		"codex-id", time.Unix(13, 0),
+		"latest", []string{"m1", "m2"},
+		json.RawMessage(`{"tool":"claude"}`),
+		"ssh-host", "/remote/path",
+		true, "legacy", "dev@box",
+	)
+
+	_, _,
+		_, _,
+		_, _,
+		_, _,
+		_, _,
+		_, _,
+		_,
+		_, _,
+		adopted, adoptedTmux, adoptedSSH := UnmarshalToolData(toolData)
+
+	if !adopted {
+		t.Fatal("adopted flag was not preserved")
+	}
+	if adoptedTmux != "legacy" {
+		t.Fatalf("adopted tmux = %q, want %q", adoptedTmux, "legacy")
+	}
+	if adoptedSSH != "dev@box" {
+		t.Fatalf("adopted ssh host = %q, want %q", adoptedSSH, "dev@box")
+	}
+}
+
+func TestUnmarshalToolDataOldBlobDefaultsAdoptedFields(t *testing.T) {
+	oldBlob := json.RawMessage(`{"claude_session_id":"abc","ssh_host":"dev@box"}`)
+
+	_, _,
+		_, _,
+		_, _,
+		_, _,
+		_, _,
+		_, _,
+		_,
+		_, _,
+		adopted, adoptedTmux, adoptedSSH := UnmarshalToolData(oldBlob)
+
+	if adopted {
+		t.Fatal("adopted should default to false for old rows")
+	}
+	if adoptedTmux != "" {
+		t.Fatalf("adopted tmux = %q, want empty", adoptedTmux)
+	}
+	if adoptedSSH != "" {
+		t.Fatalf("adopted ssh host = %q, want empty", adoptedSSH)
+	}
+}
+
 func TestSaveLoadGroups(t *testing.T) {
 	db := newTestDB(t)
 

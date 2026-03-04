@@ -51,6 +51,11 @@ type jsonInstanceData struct {
 	LatestPrompt    string          `json:"latest_prompt,omitempty"`
 	ToolOptionsJSON json.RawMessage `json:"tool_options,omitempty"`
 	LoadedMCPNames  []string        `json:"loaded_mcp_names,omitempty"`
+	SSHHost         string          `json:"ssh_host,omitempty"`
+	SSHRemotePath   string          `json:"ssh_remote_path,omitempty"`
+	Adopted         bool            `json:"adopted,omitempty"`
+	AdoptedTmuxName string          `json:"adopted_tmux_name,omitempty"`
+	AdoptedSSHHost  string          `json:"adopted_ssh_host,omitempty"`
 }
 
 // jsonGroupData mirrors session.GroupData for migration.
@@ -79,6 +84,9 @@ type toolDataBlob struct {
 	ToolOptions        json.RawMessage `json:"tool_options,omitempty"`
 	SSHHost            string          `json:"ssh_host,omitempty"`
 	SSHRemotePath      string          `json:"ssh_remote_path,omitempty"`
+	Adopted            bool            `json:"adopted,omitempty"`
+	AdoptedTmuxName    string          `json:"adopted_tmux_name,omitempty"`
+	AdoptedSSHHost     string          `json:"adopted_ssh_host,omitempty"`
 }
 
 // MigrateFromJSON reads a sessions.json file and inserts all data into the StateDB.
@@ -107,6 +115,11 @@ func MigrateFromJSON(jsonPath string, db *StateDB) (int, int, error) {
 			LatestPrompt:      inst.LatestPrompt,
 			LoadedMCPNames:    inst.LoadedMCPNames,
 			ToolOptions:       inst.ToolOptionsJSON,
+			SSHHost:           inst.SSHHost,
+			SSHRemotePath:     inst.SSHRemotePath,
+			Adopted:           inst.Adopted,
+			AdoptedTmuxName:   inst.AdoptedTmuxName,
+			AdoptedSSHHost:    inst.AdoptedSSHHost,
 		}
 		if !inst.ClaudeDetectedAt.IsZero() {
 			td.ClaudeDetectedAt = inst.ClaudeDetectedAt.Unix()
@@ -183,6 +196,7 @@ func MarshalToolData(
 	latestPrompt string, loadedMCPNames []string,
 	toolOptionsJSON json.RawMessage,
 	sshHost string, sshRemotePath string,
+	adopted bool, adoptedTmuxName string, adoptedSSHHost string,
 ) json.RawMessage {
 	td := toolDataBlob{
 		ClaudeSessionID:   claudeSessionID,
@@ -196,6 +210,9 @@ func MarshalToolData(
 		ToolOptions:       toolOptionsJSON,
 		SSHHost:           sshHost,
 		SSHRemotePath:     sshRemotePath,
+		Adopted:           adopted,
+		AdoptedTmuxName:   adoptedTmuxName,
+		AdoptedSSHHost:    adoptedSSHHost,
 	}
 	if !claudeDetectedAt.IsZero() {
 		td.ClaudeDetectedAt = claudeDetectedAt.Unix()
@@ -224,6 +241,7 @@ func UnmarshalToolData(data json.RawMessage) (
 	latestPrompt string, loadedMCPNames []string,
 	toolOptionsJSON json.RawMessage,
 	sshHost string, sshRemotePath string,
+	adopted bool, adoptedTmuxName string, adoptedSSHHost string,
 ) {
 	if len(data) == 0 {
 		return
@@ -255,5 +273,8 @@ func UnmarshalToolData(data json.RawMessage) (
 	toolOptionsJSON = td.ToolOptions
 	sshHost = td.SSHHost
 	sshRemotePath = td.SSHRemotePath
+	adopted = td.Adopted
+	adoptedTmuxName = td.AdoptedTmuxName
+	adoptedSSHHost = td.AdoptedSSHHost
 	return
 }

@@ -41,3 +41,36 @@ func TestSSHControlPathPattern_UsesHashedToken(t *testing.T) {
 		t.Fatalf("expected basename to be %%C, got: %s", filepath.Base(got))
 	}
 }
+
+func TestNewAdoptedInstance_DisablesSSHWrapping(t *testing.T) {
+	inst := NewAdoptedInstance(
+		"remote-claude",
+		"/srv/remote/project",
+		"remote",
+		"",
+		"dev@host",
+		"legacy-session",
+	)
+
+	if !inst.Adopted {
+		t.Fatal("expected adopted instance")
+	}
+	if inst.AdoptedSSHHost != "dev@host" {
+		t.Fatalf("AdoptedSSHHost = %q, want %q", inst.AdoptedSSHHost, "dev@host")
+	}
+	if inst.AdoptedTmuxName != "legacy-session" {
+		t.Fatalf("AdoptedTmuxName = %q, want %q", inst.AdoptedTmuxName, "legacy-session")
+	}
+	if inst.Tool != "shell" {
+		t.Fatalf("Tool = %q, want shell default", inst.Tool)
+	}
+	if inst.IsSSH() {
+		t.Fatal("adopted session must not be treated as SSH for wrapForSSH")
+	}
+	if !strings.Contains(inst.Command, "ssh -tt") {
+		t.Fatalf("adopted proxy command should use ssh attach flow, got: %s", inst.Command)
+	}
+	if !strings.Contains(inst.Command, "tmux attach-session -t") {
+		t.Fatalf("adopted proxy command should attach remote tmux session, got: %s", inst.Command)
+	}
+}

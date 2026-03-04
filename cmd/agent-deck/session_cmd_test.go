@@ -2,10 +2,34 @@ package main
 
 import (
 	"encoding/json"
+	"io"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = orig }()
+
+	fn()
+
+	_ = w.Close()
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("io.ReadAll: %v", err)
+	}
+	_ = r.Close()
+	return string(data)
+}
 
 func TestMCPInfoForJSON_NilOrEmpty(t *testing.T) {
 	if got := mcpInfoForJSON(nil); got != nil {
@@ -42,5 +66,12 @@ func TestMCPInfoForJSON_UsesSlicesAndIsMarshalable(t *testing.T) {
 	payload := map[string]interface{}{"mcps": got}
 	if _, err := json.Marshal(payload); err != nil {
 		t.Fatalf("json.Marshal failed: %v", err)
+	}
+}
+
+func TestPrintSessionHelp_IncludesAdopt(t *testing.T) {
+	output := captureStdout(t, printSessionHelp)
+	if !strings.Contains(output, "adopt <tmux-name>") {
+		t.Fatalf("session help missing adopt command: %s", output)
 	}
 }

@@ -3332,6 +3332,25 @@ func parseSessionNames(output []byte, keep func(string) bool) []string {
 	return sessions
 }
 
+var remoteANSIOSCStripRE = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b\(B`)
+var remotePromptPathRE = regexp.MustCompile(`(?:^|[[:space:]])(?:[^@\s]+@[^:\s]+:)?((?:~|/)[^\s]+)[#>$%]$`)
+
+func stripRemoteANSIOSC(content string) string {
+	if content == "" {
+		return ""
+	}
+	return remoteANSIOSCStripRE.ReplaceAllString(content, "")
+}
+
+func noSuchRemoteSession(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "can't find session") ||
+		strings.Contains(msg, "failed to find session")
+}
+
 func runSSHCommand(sshHost, remoteCommand string) ([]byte, error) {
 	if strings.TrimSpace(sshHost) == "" {
 		return nil, errors.New("ssh host is required")
@@ -3382,6 +3401,28 @@ func ListRemoteSessions(sshHost string) ([]string, error) {
 	return parseSessionNames(output, func(string) bool { return true }), nil
 }
 
+// RemoteSessionExists checks whether a specific tmux session exists on the remote host.
+func RemoteSessionExists(sshHost, session string) (bool, error) {
+	if strings.TrimSpace(session) == "" {
+		return false, errors.New("session is required")
+	}
+
+	remoteCommand := fmt.Sprintf("tmux has-session -t %s", shellQuoteForSSH(session))
+	_, err := runSSHCommand(sshHost, remoteCommand)
+	if err != nil {
+		if noTmuxSessions(err) || noSuchRemoteSession(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf(
+			"failed to check remote session %s on %s: %w",
+			session,
+			sshHost,
+			err,
+		)
+	}
+	return true, nil
+}
+
 // CaptureRemotePane captures up to 2000 lines from a remote tmux session pane.
 func CaptureRemotePane(sshHost, session string) (string, error) {
 	if strings.TrimSpace(session) == "" {
@@ -3403,6 +3444,62 @@ func CaptureRemotePane(sshHost, session string) (string, error) {
 	}
 
 	return string(output), nil
+}
+
+// SuppressRemoteStatusBar disables tmux status bar for the target remote session.
+func SuppressRemoteStatusBar(sshHost, session string) error {
+	if strings.TrimSpace(session) == "" {
+		return errors.New("session is required")
+	}
+	remoteCommand := fmt.Sprintf("tmux set-option -t %s status off", shellQuoteForSSH(session))
+	if _, err := runSSHCommand(sshHost, remoteCommand); err != nil {
+		return fmt.Errorf("failed to suppress remote status bar for %s on %s: %w", session, sshHost, err)
+	}
+	return nil
+}
+
+// DetectRemoteSessionWorkDir tries to resolve current working directory for a remote tmux session.
+// It first queries pane_current_path directly, then falls back to parsing captured pane content.
+func DetectRemoteSessionWorkDir(sshHost, session string) (string, error) {
+	if strings.TrimSpace(session) == "" {
+		return "", errors.New("session is required")
+	}
+
+	remoteCommand := fmt.Sprintf(
+		"tmux display-message -p -t %s '#{pane_current_path}'",
+		shellQuoteForSSH(session),
+	)
+	if output, err := runSSHCommand(sshHost, remoteCommand); err == nil {
+		if workDir := strings.TrimSpace(string(output)); workDir != "" {
+			return workDir, nil
+		}
+	}
+
+	content, err := CaptureRemotePane(sshHost, session)
+	if err != nil {
+		return "", err
+	}
+
+	return detectRemotePromptPath(content), nil
+}
+
+func detectRemotePromptPath(content string) string {
+	if content == "" {
+		return ""
+	}
+	lines := strings.Split(stripRemoteANSIOSC(content), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		matches := remotePromptPathRE.FindStringSubmatch(line)
+		if len(matches) < 2 {
+			continue
+		}
+		return matches[1]
+	}
+	return ""
 }
 
 // ListNonAgentDeckSessions lists local tmux sessions excluding agent-deck sessions.

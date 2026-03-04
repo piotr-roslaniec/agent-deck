@@ -35,6 +35,8 @@ func handleSession(profile string, args []string) {
 		handleSessionFork(profile, args[1:])
 	case "attach":
 		handleSessionAttach(profile, args[1:])
+	case "adopt":
+		handleSessionAdopt(profile, args[1:])
 	case "show":
 		handleSessionShow(profile, args[1:])
 	case "current":
@@ -70,6 +72,7 @@ func printSessionHelp() {
 	fmt.Println("  restart <id>            Restart session (Claude: reload MCPs)")
 	fmt.Println("  fork <id>               Fork Claude session with context")
 	fmt.Println("  attach <id>             Attach to session interactively")
+	fmt.Println("  adopt <tmux-name>       Adopt existing remote tmux session")
 	fmt.Println("  show [id]               Show session details (auto-detect current if no id)")
 	fmt.Println("  current                 Show current session and profile (auto-detect)")
 	fmt.Println("  set <id> <field> <value>  Update session property")
@@ -89,6 +92,7 @@ func printSessionHelp() {
 	fmt.Println("  agent-deck session restart my-project")
 	fmt.Println("  agent-deck session fork my-project -t \"my-project-fork\"")
 	fmt.Println("  agent-deck session attach my-project")
+	fmt.Println("  agent-deck session adopt claude-dev --host beelink")
 	fmt.Println("  agent-deck session show                  # Auto-detect current session")
 	fmt.Println("  agent-deck session show my-project --json")
 	fmt.Println("  agent-deck session set-parent sub-task main-project  # Make sub-task a sub-session")
@@ -110,6 +114,167 @@ func printSessionHelp() {
 	fmt.Println("  agent-deck session set my-project claude-session-id \"abc123-def456\"")
 	fmt.Println("  agent-deck session set my-project tool claude")
 	fmt.Println("  agent-deck session set my-project wrapper \"nvim +'terminal {command}'\"")
+}
+
+// handleSessionAdopt adopts an existing remote tmux session into local storage.
+func handleSessionAdopt(profile string, args []string) {
+	fs := flag.NewFlagSet("session adopt", flag.ExitOnError)
+	hostName := fs.String("host", "", "Configured host name (required)")
+	title := fs.String("title", "", "Local session title override")
+	sessionPath := fs.String("path", "", "Project path override (remote path)")
+	tool := fs.String("tool", "", "Tool label override (default: shell)")
+	group := fs.String("group", "", "Group path override")
+	jsonOutput := fs.Bool("json", false, "Output as JSON")
+
+	fs.Usage = func() {
+		fmt.Println("Usage: agent-deck session adopt <remote-tmux-session> --host <name> [options]")
+		fmt.Println()
+		fmt.Println("Adopt an existing remote tmux session into Agent Deck.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		os.Exit(1)
+	}
+
+	out := NewCLIOutput(*jsonOutput, false)
+
+	remoteTmuxName := strings.TrimSpace(fs.Arg(0))
+	if remoteTmuxName == "" {
+		out.Error("remote tmux session name is required", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if strings.TrimSpace(*hostName) == "" {
+		out.Error("--host is required", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
+	storage, instances, groupsData, err := loadSessionData(profile)
+	if err != nil {
+		out.Error(err.Error(), ErrCodeNotFound)
+		os.Exit(1)
+	}
+
+	config, err := session.LoadUserConfig()
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to load config: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	hostCfg, ok := config.Hosts[strings.TrimSpace(*hostName)]
+	if !ok {
+		out.Error(fmt.Sprintf("host '%s' not found in config", strings.TrimSpace(*hostName)), ErrCodeNotFound)
+		os.Exit(2)
+	}
+	sshHost := strings.TrimSpace(hostCfg.SSHHost)
+	if sshHost == "" {
+		out.Error(fmt.Sprintf("host '%s' has empty ssh_host", strings.TrimSpace(*hostName)), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
+	exists, err := tmux.RemoteSessionExists(sshHost, remoteTmuxName)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to verify remote session: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if !exists {
+		out.Error(
+			fmt.Sprintf("remote tmux session '%s' not found on host '%s'", remoteTmuxName, strings.TrimSpace(*hostName)),
+			ErrCodeNotFound,
+		)
+		os.Exit(2)
+	}
+
+	for _, inst := range instances {
+		if inst.Adopted && inst.AdoptedSSHHost == sshHost && inst.AdoptedTmuxName == remoteTmuxName {
+			out.Error(
+				fmt.Sprintf("remote tmux session '%s' on host '%s' is already adopted as '%s'", remoteTmuxName, strings.TrimSpace(*hostName), inst.Title),
+				ErrCodeInvalidOperation,
+			)
+			os.Exit(1)
+		}
+	}
+
+	adoptedPath := strings.TrimSpace(*sessionPath)
+	if adoptedPath == "" {
+		if detectedPath, detectErr := tmux.DetectRemoteSessionWorkDir(sshHost, remoteTmuxName); detectErr == nil {
+			adoptedPath = strings.TrimSpace(detectedPath)
+		}
+	}
+	if adoptedPath == "" {
+		adoptedPath = strings.TrimSpace(hostCfg.DefaultPath)
+	}
+	if adoptedPath == "" {
+		adoptedPath = "."
+	}
+
+	adoptedTitle := strings.TrimSpace(*title)
+	if adoptedTitle == "" {
+		adoptedTitle = remoteTmuxName
+		adoptedTitle = generateUniqueTitle(instances, adoptedTitle, adoptedPath)
+	}
+
+	adoptedTool := strings.TrimSpace(*tool)
+	if adoptedTool == "" {
+		adoptedTool = "shell"
+	}
+
+	suppressErr := tmux.SuppressRemoteStatusBar(sshHost, remoteTmuxName)
+
+	adopted := session.NewAdoptedInstance(
+		adoptedTitle,
+		adoptedPath,
+		strings.TrimSpace(*group),
+		adoptedTool,
+		sshHost,
+		remoteTmuxName,
+	)
+	if err := adopted.Start(); err != nil {
+		out.Error(fmt.Sprintf("failed to start adopted session proxy: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
+	instances = append(instances, adopted)
+	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
+	if adopted.GroupPath != "" {
+		groupTree.CreateGroup(adopted.GroupPath)
+	}
+	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
+		out.Error(fmt.Sprintf("failed to save adopted session: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
+	jsonData := map[string]interface{}{
+		"success":            true,
+		"id":                 adopted.ID,
+		"title":              adopted.Title,
+		"path":               adopted.ProjectPath,
+		"group":              adopted.GroupPath,
+		"tool":               adopted.Tool,
+		"profile":            storage.Profile(),
+		"adopted":            true,
+		"host_name":          strings.TrimSpace(*hostName),
+		"adopted_ssh_host":   adopted.AdoptedSSHHost,
+		"adopted_tmux_name":  adopted.AdoptedTmuxName,
+		"status_suppressed":  suppressErr == nil,
+		"remote_status_bar":  "off",
+		"remote_session_ref": remoteTmuxName,
+	}
+	if tmuxSess := adopted.GetTmuxSession(); tmuxSess != nil {
+		jsonData["tmux_session"] = tmuxSess.Name
+	}
+	if suppressErr != nil {
+		jsonData["status_suppression_warning"] = suppressErr.Error()
+	}
+
+	out.Success(
+		fmt.Sprintf("Adopted remote session '%s' on host '%s' as '%s'", remoteTmuxName, strings.TrimSpace(*hostName), adopted.Title),
+		jsonData,
+	)
+	if suppressErr != nil && !*jsonOutput {
+		fmt.Fprintf(os.Stderr, "Warning: failed to suppress remote status bar: %v\n", suppressErr)
+	}
 }
 
 // handleSessionStart starts a session's tmux process

@@ -121,8 +121,11 @@ type Instance struct {
 	SandboxContainer string         `json:"sandbox_container,omitempty"` // Container name when running in sandbox.
 
 	// SSH remote support
-	SSHHost       string `json:"ssh_host,omitempty"`
-	SSHRemotePath string `json:"ssh_remote_path,omitempty"`
+	SSHHost         string `json:"ssh_host,omitempty"`
+	SSHRemotePath   string `json:"ssh_remote_path,omitempty"`
+	Adopted         bool   `json:"adopted,omitempty"`
+	AdoptedTmuxName string `json:"adopted_tmux_name,omitempty"`
+	AdoptedSSHHost  string `json:"adopted_ssh_host,omitempty"`
 
 	// MCP tracking - which MCPs were loaded when session started/restarted
 	// Used to detect pending MCPs (added after session start) and stale MCPs (removed but still running)
@@ -189,7 +192,7 @@ func (inst *Instance) IsSandboxed() bool {
 
 // IsSSH returns true if this instance runs on a remote host via SSH.
 func (inst *Instance) IsSSH() bool {
-	return inst.SSHHost != ""
+	return inst.SSHHost != "" && !inst.Adopted
 }
 
 // NewSandboxConfig builds a SandboxConfig from CLI flags and user settings.
@@ -359,6 +362,47 @@ func NewInstanceWithGroupAndTool(title, projectPath, groupPath, tool string) *In
 	inst := NewInstanceWithTool(title, projectPath, tool)
 	inst.GroupPath = groupPath
 	return inst
+}
+
+// NewAdoptedInstance creates an instance that proxies a pre-existing remote tmux session.
+// It runs an SSH attach command inside a local tmux session, so SSH wrapping must stay disabled.
+func NewAdoptedInstance(title, projectPath, groupPath, tool, adoptedSSHHost, adoptedTmuxName string) *Instance {
+	if strings.TrimSpace(tool) == "" {
+		tool = "shell"
+	}
+
+	inst := NewInstanceWithTool(title, projectPath, tool)
+	if strings.TrimSpace(groupPath) != "" {
+		inst.GroupPath = strings.TrimSpace(groupPath)
+	}
+	inst.Adopted = true
+	inst.AdoptedSSHHost = strings.TrimSpace(adoptedSSHHost)
+	inst.AdoptedTmuxName = strings.TrimSpace(adoptedTmuxName)
+	inst.Command = buildAdoptedProxyCommand(inst.AdoptedSSHHost, inst.AdoptedTmuxName)
+
+	// Keep SSHHost empty to prevent wrapForSSH from double-wrapping the explicit SSH proxy command.
+	inst.SSHHost = ""
+	inst.SSHRemotePath = ""
+	return inst
+}
+
+func buildAdoptedProxyCommand(sshHost, remoteTmuxName string) string {
+	sshHost = strings.TrimSpace(sshHost)
+	remoteTmuxName = strings.TrimSpace(remoteTmuxName)
+	if sshHost == "" || remoteTmuxName == "" {
+		return ""
+	}
+
+	controlDir := sshSocketDir()
+	_ = os.MkdirAll(controlDir, 0o700)
+
+	remoteAttach := fmt.Sprintf("tmux attach-session -t %s", shellQuote(remoteTmuxName))
+	return fmt.Sprintf(
+		"ssh -tt -o ControlMaster=auto -o ControlPath=%s -o ControlPersist=600 %s %s",
+		shellQuote(sshControlPathPattern()),
+		shellQuote(sshHost),
+		shellQuote(remoteAttach),
+	)
 }
 
 // extractGroupPath extracts a group path from project path
