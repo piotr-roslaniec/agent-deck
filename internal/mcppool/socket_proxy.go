@@ -218,7 +218,41 @@ func (p *SocketProxy) Start() error {
 // maxClientsPerProxy caps the number of concurrent client connections per MCP
 // socket proxy. Each client spawns a goroutine with a scanner buffer, so
 // unbounded connections (e.g., from reconnect loops) can leak gigabytes of RAM.
-const maxClientsPerProxy = 100
+const (
+	maxClientsPerProxy  = 100
+	scannerBufferSize   = 64 * 1024
+	scannerMaxTokenSize = 10 * 1024 * 1024
+)
+
+var scannerBufferPool = sync.Pool{
+	New: func() any {
+		return make([]byte, scannerBufferSize)
+	},
+}
+
+func acquireScannerBuffer() []byte {
+	buf, ok := scannerBufferPool.Get().([]byte)
+	if !ok || cap(buf) < scannerBufferSize {
+		return make([]byte, scannerBufferSize)
+	}
+	return buf[:scannerBufferSize]
+}
+
+func releaseScannerBuffer(buf []byte) {
+	if cap(buf) < scannerBufferSize {
+		return
+	}
+	if cap(buf) > scannerMaxTokenSize {
+		buf = make([]byte, scannerBufferSize)
+	}
+	scannerBufferPool.Put(buf[:scannerBufferSize])
+}
+
+func configureScannerWithPooledBuffer(scanner *bufio.Scanner) []byte {
+	buf := acquireScannerBuffer()
+	scanner.Buffer(buf, scannerMaxTokenSize)
+	return buf
+}
 
 func (p *SocketProxy) acceptConnections() {
 	clientCounter := 0
@@ -277,7 +311,8 @@ func (p *SocketProxy) handleClient(sessionID string, conn net.Conn) {
 	}()
 
 	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024) // 10MB max for large MCP requests
+	scannerBuf := configureScannerWithPooledBuffer(scanner)
+	defer releaseScannerBuffer(scannerBuf)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 
@@ -299,7 +334,8 @@ func (p *SocketProxy) handleClient(sessionID string, conn net.Conn) {
 
 func (p *SocketProxy) broadcastResponses() {
 	scanner := bufio.NewScanner(p.mcpStdout)
-	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024) // 10MB max for large MCP responses
+	scannerBuf := configureScannerWithPooledBuffer(scanner)
+	defer releaseScannerBuffer(scannerBuf)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 

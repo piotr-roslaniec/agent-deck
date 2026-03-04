@@ -7,14 +7,26 @@ import (
 	"testing"
 )
 
-func TestScannerHandlesLargeMessages(t *testing.T) {
+func TestAcquireScannerBufferReturnsConfiguredSize(t *testing.T) {
+	buf := acquireScannerBuffer()
+	t.Cleanup(func() { releaseScannerBuffer(buf) })
+
+	if len(buf) != scannerBufferSize {
+		t.Fatalf("expected buffer len %d, got %d", scannerBufferSize, len(buf))
+	}
+	if cap(buf) < scannerBufferSize {
+		t.Fatalf("expected buffer cap >= %d, got %d", scannerBufferSize, cap(buf))
+	}
+}
+
+func TestScannerHandlesLargeMessagesWithPooledBuffer(t *testing.T) {
 	// Default bufio.Scanner fails on messages > 64KB
 	// MCP responses from tools like context7, firecrawl regularly exceed this
 	largeMessage := strings.Repeat("x", 100*1024) // 100KB
 
-	// This simulates what broadcastResponses does with our fix
 	scanner := bufio.NewScanner(strings.NewReader(largeMessage + "\n"))
-	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024) // Our fix: 10MB max
+	scannerBuf := configureScannerWithPooledBuffer(scanner)
+	defer releaseScannerBuffer(scannerBuf)
 
 	if !scanner.Scan() {
 		t.Fatalf("Scanner should handle 100KB message, got error: %v", scanner.Err())
