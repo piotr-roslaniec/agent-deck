@@ -238,6 +238,8 @@ func mapClaudeSDKMessageTypeToStatus(msgType string, raw map[string]json.RawMess
 		return ""
 	}
 
+	// Keep two passes intentionally: exact known types first for stable mappings, then
+	// fuzzy matching as a forward-compatible fallback for new/variant SDK event names.
 	switch normalized {
 	case "assistant", "assistant_message", "assistant_delta":
 		return "running"
