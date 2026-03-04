@@ -62,6 +62,8 @@ func NewClaudeSDKBridge(hooksDir string) *ClaudeSDKBridge {
 	return &ClaudeSDKBridge{
 		hooksDir: hooksDir,
 		upgrader: websocket.Upgrader{
+			// Intentionally permissive: the bridge listens on 127.0.0.1 only, so
+			// origin filtering adds little security while blocking local SDK clients.
 			CheckOrigin: func(_ *http.Request) bool { return true },
 		},
 	}
