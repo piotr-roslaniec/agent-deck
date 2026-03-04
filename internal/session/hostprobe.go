@@ -230,7 +230,7 @@ func SelectBestHost(results []HostProbeResult) (HostProbeResult, error) {
 	// Filter to non-overloaded
 	var candidates []HostProbeResult
 	for _, r := range healthy {
-		peak := max(r.Metrics.CPUPercent, max(r.Metrics.RAMPercent, r.Metrics.DiskPercent))
+		peak := maxFloat64(r.Metrics.CPUPercent, maxFloat64(r.Metrics.RAMPercent, r.Metrics.DiskPercent))
 		if peak < defaultOverloadThreshold {
 			candidates = append(candidates, r)
 		}
@@ -250,8 +250,8 @@ func SelectBestHost(results []HostProbeResult) (HostProbeResult, error) {
 
 	// Sort by peak, tiebreak by average
 	sort.Slice(candidates, func(i, j int) bool {
-		pi := max(candidates[i].Metrics.CPUPercent, max(candidates[i].Metrics.RAMPercent, candidates[i].Metrics.DiskPercent))
-		pj := max(candidates[j].Metrics.CPUPercent, max(candidates[j].Metrics.RAMPercent, candidates[j].Metrics.DiskPercent))
+		pi := maxFloat64(candidates[i].Metrics.CPUPercent, maxFloat64(candidates[i].Metrics.RAMPercent, candidates[i].Metrics.DiskPercent))
+		pj := maxFloat64(candidates[j].Metrics.CPUPercent, maxFloat64(candidates[j].Metrics.RAMPercent, candidates[j].Metrics.DiskPercent))
 		if pi != pj {
 			return pi < pj
 		}
@@ -263,7 +263,7 @@ func SelectBestHost(results []HostProbeResult) (HostProbeResult, error) {
 	return candidates[0], nil
 }
 
-func max(a, b float64) float64 {
+func maxFloat64(a, b float64) float64 {
 	if a > b {
 		return a
 	}
