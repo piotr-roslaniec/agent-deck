@@ -655,7 +655,7 @@ func TestNewDialog_TabNavigationWithWorktree(t *testing.T) {
 	branchIdx := dialog.indexOf(focusBranch)
 	maxIdx := len(dialog.focusTargets) - 1
 
-	// Tab through: 0 -> 1 -> 2 -> 3(worktree) -> 4(sandbox) -> branchIdx(branch) -> 0.
+	// Tab through: 0 -> 1 -> 2 -> 3(worktree) -> 4(sandbox) -> 5(host) -> branchIdx(branch) -> 0.
 	for i := 1; i <= maxIdx; i++ {
 		dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyTab})
 		want := i
@@ -685,7 +685,7 @@ func TestNewDialog_TabNavigationWithoutWorktree(t *testing.T) {
 
 	maxIdx := len(dialog.focusTargets) - 1
 
-	// Tab through: 0 -> 1 -> 2 -> 3(worktree) -> 4(sandbox) -> 0.
+	// Tab through: 0 -> 1 -> 2 -> 3(worktree) -> 4(sandbox) -> 5(host) -> 0.
 	for i := 1; i <= maxIdx; i++ {
 		dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyTab})
 		if dialog.focusIndex != i {
@@ -898,6 +898,97 @@ func TestNewDialog_CheckboxesFocusIndependently(t *testing.T) {
 
 	if !strings.Contains(view, "Run in Docker sandbox") {
 		t.Error("View should contain sandbox checkbox")
+	}
+}
+
+func TestBuildHostOptions_Order(t *testing.T) {
+	cfg := &session.UserConfig{
+		Hosts: map[string]session.HostConfig{
+			"zeta":  {SSHHost: "pi@zeta"},
+			"alpha": {SSHHost: "pi@alpha"},
+		},
+	}
+
+	got := buildHostOptions(cfg)
+	want := []string{"local", "auto", "alpha", "zeta"}
+
+	if len(got) != len(want) {
+		t.Fatalf("len(got) = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestNewDialog_HostSelectionCyclesWithArrows(t *testing.T) {
+	dialog := NewNewDialog()
+	dialog.Show()
+	dialog.hostOptions = []string{"local", "auto", "dev"}
+	dialog.hostCursor = 0
+	dialog.rebuildFocusTargets()
+	dialog.focusIndex = dialog.indexOf(focusHost)
+	dialog.updateFocus()
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if got := dialog.GetSelectedHost(); got != "auto" {
+		t.Fatalf("after first right, host = %q, want %q", got, "auto")
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if got := dialog.GetSelectedHost(); got != "dev" {
+		t.Fatalf("after second right, host = %q, want %q", got, "dev")
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if got := dialog.GetSelectedHost(); got != "local" {
+		t.Fatalf("after third right, host = %q, want %q", got, "local")
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	if got := dialog.GetSelectedHost(); got != "dev" {
+		t.Fatalf("after left wrap, host = %q, want %q", got, "dev")
+	}
+}
+
+func TestNewDialog_SelectingRemoteHostDisablesSandbox(t *testing.T) {
+	dialog := NewNewDialog()
+	dialog.Show()
+	dialog.hostOptions = []string{"local", "auto"}
+	dialog.hostCursor = 0
+	dialog.sandboxEnabled = true
+	dialog.rebuildFocusTargets()
+	dialog.focusIndex = dialog.indexOf(focusHost)
+	dialog.updateFocus()
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRight})
+
+	if got := dialog.GetSelectedHost(); got != "auto" {
+		t.Fatalf("host = %q, want %q", got, "auto")
+	}
+	if dialog.sandboxEnabled {
+		t.Fatal("sandbox should be disabled when a non-local host is selected")
+	}
+}
+
+func TestNewDialog_EnablingSandboxResetsHostToLocal(t *testing.T) {
+	dialog := NewNewDialog()
+	dialog.Show()
+	dialog.hostOptions = []string{"local", "auto", "dev"}
+	dialog.hostCursor = 2
+	dialog.sandboxEnabled = false
+	dialog.rebuildFocusTargets()
+	dialog.focusIndex = dialog.indexOf(focusSandbox)
+	dialog.updateFocus()
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+
+	if !dialog.sandboxEnabled {
+		t.Fatal("sandbox should be enabled after space toggle")
+	}
+	if got := dialog.GetSelectedHost(); got != "local" {
+		t.Fatalf("host = %q, want %q after enabling sandbox", got, "local")
 	}
 }
 

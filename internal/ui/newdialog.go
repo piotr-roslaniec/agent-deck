@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -24,6 +25,7 @@ const (
 	focusCommand               // tool/command picker.
 	focusWorktree              // worktree checkbox.
 	focusSandbox               // sandbox checkbox.
+	focusHost                  // host picker (local/auto/configured host).
 	focusInherited             // inherited Docker settings toggle (conditional).
 	focusBranch                // branch input (conditional — only when worktree enabled).
 	focusOptions               // tool-specific options panel (conditional).
@@ -66,6 +68,9 @@ type NewDialog struct {
 	sandboxEnabled    bool
 	inheritedExpanded bool             // whether the inherited settings section is expanded.
 	inheritedSettings []settingDisplay // non-default Docker config values to display.
+	// Host selection support.
+	hostOptions []string // Ordered host picker options: local, auto, configured hostnames.
+	hostCursor  int      // Selected host option index.
 	// Inline validation error displayed inside the dialog.
 	validationErr string
 	pathCycler    session.CompletionCycler // Path autocomplete state.
@@ -82,6 +87,7 @@ type dialogSnapshot struct {
 	path            string
 	commandCursor   int
 	commandInput    string
+	hostCursor      int
 	sandboxEnabled  bool
 	worktreeEnabled bool
 	branch          string
@@ -99,6 +105,22 @@ func buildPresetCommands() []string {
 		presets = append(presets, customTools...)
 	}
 	return presets
+}
+
+// buildHostOptions returns host picker options in a stable order:
+// local, auto, then configured hostnames sorted alphabetically.
+func buildHostOptions(userConfig *session.UserConfig) []string {
+	options := []string{"local", "auto"}
+	if userConfig == nil || len(userConfig.Hosts) == 0 {
+		return options
+	}
+
+	hostNames := make([]string, 0, len(userConfig.Hosts))
+	for name := range userConfig.Hosts {
+		hostNames = append(hostNames, name)
+	}
+	sort.Strings(hostNames)
+	return append(options, hostNames...)
 }
 
 // buildInheritedSettings returns display pairs for non-default Docker config values.
@@ -180,6 +202,8 @@ func NewNewDialog() *NewDialog {
 		parentGroupPath: "default",
 		parentGroupName: "default",
 		worktreeEnabled: false,
+		hostOptions:     []string{"local", "auto"},
+		hostCursor:      0,
 	}
 	dlg.updateToolOptions() // Also calls rebuildFocusTargets.
 	return dlg
@@ -213,6 +237,9 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
 	d.worktreeEnabled = false
 	d.branchInput.SetValue("")
 	d.branchAutoSet = false
+	// Reset host picker from global config.
+	d.hostOptions = buildHostOptions(nil)
+	d.hostCursor = 0
 	// Reset sandbox from global config default.
 	d.sandboxEnabled = false
 	d.inheritedExpanded = false
@@ -231,6 +258,7 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
 	d.geminiOptions.SetDefaults(false)
 	d.codexOptions.SetDefaults(false)
 	if userConfig, err := session.LoadUserConfig(); err == nil && userConfig != nil {
+		d.hostOptions = buildHostOptions(userConfig)
 		d.geminiOptions.SetDefaults(userConfig.Gemini.YoloMode)
 		d.codexOptions.SetDefaults(userConfig.Codex.YoloMode)
 		d.claudeOptions.SetDefaults(userConfig)
@@ -305,6 +333,7 @@ func (d *NewDialog) saveSnapshot() *dialogSnapshot {
 		path:            d.pathInput.Value(),
 		commandCursor:   d.commandCursor,
 		commandInput:    d.commandInput.Value(),
+		hostCursor:      d.hostCursor,
 		sandboxEnabled:  d.sandboxEnabled,
 		worktreeEnabled: d.worktreeEnabled,
 		branch:          d.branchInput.Value(),
@@ -321,10 +350,15 @@ func (d *NewDialog) restoreSnapshot(s *dialogSnapshot) {
 	d.pathInput.SetValue(s.path)
 	d.commandCursor = s.commandCursor
 	d.commandInput.SetValue(s.commandInput)
+	d.hostCursor = s.hostCursor
+	if d.hostCursor < 0 || d.hostCursor >= len(d.hostOptions) {
+		d.hostCursor = 0
+	}
 	d.sandboxEnabled = s.sandboxEnabled
 	d.worktreeEnabled = s.worktreeEnabled
 	d.branchInput.SetValue(s.branch)
 	d.branchAutoSet = s.branchAutoSet
+	d.enforceHostSandboxExclusivity()
 	if s.claudeOptions != nil {
 		d.claudeOptions.SetFromOptions(s.claudeOptions)
 	}
@@ -390,6 +424,7 @@ func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
 	}
 
 	d.sandboxEnabled = rs.SandboxEnabled
+	d.enforceHostSandboxExclusivity()
 
 	// Reset worktree (ephemeral, never pre-filled)
 	d.worktreeEnabled = false
@@ -512,7 +547,44 @@ func (d *NewDialog) IsSandboxEnabled() bool {
 // ToggleSandbox toggles Docker sandbox mode.
 func (d *NewDialog) ToggleSandbox() {
 	d.sandboxEnabled = !d.sandboxEnabled
+	if d.sandboxEnabled && d.GetSelectedHost() != "local" {
+		d.hostCursor = 0
+	}
+	if !d.sandboxEnabled {
+		d.inheritedExpanded = false
+	}
 	d.rebuildFocusTargets()
+}
+
+// GetSelectedHost returns the currently selected host option.
+// Values are: "local", "auto", or configured host name.
+func (d *NewDialog) GetSelectedHost() string {
+	if d.hostCursor < 0 || d.hostCursor >= len(d.hostOptions) {
+		return "local"
+	}
+	return d.hostOptions[d.hostCursor]
+}
+
+// cycleHost moves host selection by delta and enforces sandbox exclusivity.
+func (d *NewDialog) cycleHost(delta int) {
+	if len(d.hostOptions) == 0 {
+		return
+	}
+
+	n := len(d.hostOptions)
+	d.hostCursor = (d.hostCursor + delta + n) % n
+	if d.GetSelectedHost() != "local" {
+		d.sandboxEnabled = false
+		d.inheritedExpanded = false
+	}
+	d.rebuildFocusTargets()
+}
+
+// enforceHostSandboxExclusivity keeps host and sandbox choices mutually exclusive.
+func (d *NewDialog) enforceHostSandboxExclusivity() {
+	if d.sandboxEnabled && d.GetSelectedHost() != "local" {
+		d.hostCursor = 0
+	}
 }
 
 // GetSelectedCommand returns the currently selected command/tool
@@ -602,7 +674,7 @@ func (d *NewDialog) indexOf(target focusTarget) int {
 // rebuildFocusTargets builds the ordered list of active focusable elements
 // based on current dialog state (sandbox, worktree, tool options visibility).
 func (d *NewDialog) rebuildFocusTargets() {
-	targets := []focusTarget{focusName, focusPath, focusCommand, focusWorktree, focusSandbox}
+	targets := []focusTarget{focusName, focusPath, focusCommand, focusWorktree, focusSandbox, focusHost}
 	if d.sandboxEnabled && len(d.inheritedSettings) > 0 {
 		targets = append(targets, focusInherited)
 	}
@@ -665,6 +737,8 @@ func (d *NewDialog) updateFocus() {
 		}
 	case focusWorktree, focusSandbox, focusInherited:
 		// Checkbox/toggle rows — no text input to focus.
+	case focusHost:
+		// Picker row — no text input to focus.
 	case focusBranch:
 		d.branchInput.Focus()
 	case focusOptions:
@@ -861,6 +935,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.updateFocus()
 				return d, nil
 			}
+			if cur == focusHost {
+				d.cycleHost(-1)
+				return d, nil
+			}
 			if cur == focusOptions && d.toolOptions != nil {
 				return d, d.toolOptions.Update(msg)
 			}
@@ -870,6 +948,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.commandCursor = (d.commandCursor + 1) % len(d.presetCommands)
 				d.updateToolOptions()
 				d.updateFocus()
+				return d, nil
+			}
+			if cur == focusHost {
+				d.cycleHost(1)
 				return d, nil
 			}
 			if cur == focusOptions && d.toolOptions != nil {
@@ -1252,6 +1334,33 @@ func (d *NewDialog) View() string {
 	}
 	content.WriteString(renderCheckboxLine(sandboxLabel, d.sandboxEnabled, cur == focusSandbox))
 
+	// Host picker — individually focusable.
+	if cur == focusHost {
+		content.WriteString(activeLabelStyle.Render("▶ Host:"))
+	} else {
+		content.WriteString(labelStyle.Render("  Host:"))
+	}
+	content.WriteString("\n  ")
+	var hostButtons []string
+	for i, host := range d.hostOptions {
+		var btnStyle lipgloss.Style
+		if i == d.hostCursor {
+			btnStyle = lipgloss.NewStyle().
+				Foreground(ColorBg).
+				Background(ColorAccent).
+				Bold(true).
+				Padding(0, 2)
+		} else {
+			btnStyle = lipgloss.NewStyle().
+				Foreground(ColorTextDim).
+				Background(ColorSurface).
+				Padding(0, 2)
+		}
+		hostButtons = append(hostButtons, btnStyle.Render(host))
+	}
+	content.WriteString(lipgloss.JoinHorizontal(lipgloss.Left, hostButtons...))
+	content.WriteString("\n")
+
 	// Inherited Docker settings (only visible when sandbox is enabled).
 	if d.sandboxEnabled && len(d.inheritedSettings) > 0 {
 		focused := cur == focusInherited
@@ -1339,6 +1448,8 @@ func (d *NewDialog) View() string {
 		}
 	} else if cur == focusWorktree || cur == focusSandbox {
 		helpText = "Space toggle │ ↑↓ navigate │ Enter create │ Esc cancel"
+	} else if cur == focusHost {
+		helpText = "←→ host │ ↑↓ navigate │ Enter create │ Esc cancel"
 	} else if cur == focusInherited {
 		helpText = "Space expand/collapse │ ↑↓ navigate │ Enter create │ Esc cancel"
 	} else if cur == focusOptions && d.toolOptions != nil {

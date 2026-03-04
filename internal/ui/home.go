@@ -3705,6 +3705,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		name, path, command, branchName, worktreeEnabled := h.newDialog.GetValuesWithWorktree()
 		groupPath := h.newDialog.GetSelectedGroup()
 		claudeOpts := h.newDialog.GetClaudeOptions() // Get Claude options if applicable.
+		hostSelection := h.newDialog.GetSelectedHost()
 
 		// Resolve worktree target if enabled; actual worktree creation runs in async command.
 		var worktreePath, worktreeRepoRoot string
@@ -3746,7 +3747,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 		// Only non-worktree sessions may need interactive "create directory" confirmation.
-		if !worktreeEnabled {
+		if !worktreeEnabled && hostSelection == "local" {
 			if _, err := os.Stat(path); os.IsNotExist(err) {
 				h.newDialog.Hide()
 				h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON)
@@ -3770,6 +3771,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			branchName,
 			geminiYoloMode,
 			sandboxMode,
+			hostSelection,
 			toolOptionsJSON,
 		)
 
@@ -4597,6 +4599,7 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				"",
 				false,
 				false,
+				"local",
 				pendingToolOpts,
 			)
 		case "n", "N", "esc":
@@ -5304,11 +5307,50 @@ func (h *Home) loadUIState() {
 	h.pendingCursorRestore = &state
 }
 
+// resolveSessionHostSelection resolves "auto" or configured host names to host config.
+func resolveSessionHostSelection(selection string) (session.HostConfig, error) {
+	selection = strings.TrimSpace(selection)
+	if selection == "" || selection == "local" {
+		return session.HostConfig{}, nil
+	}
+
+	userConfig, err := session.LoadUserConfig()
+	if err != nil {
+		return session.HostConfig{}, fmt.Errorf("failed to load host config: %w", err)
+	}
+	if userConfig == nil || len(userConfig.Hosts) == 0 {
+		return session.HostConfig{}, fmt.Errorf("no hosts configured (use 'agent-deck host add' first)")
+	}
+
+	if selection == "auto" {
+		prober := &session.SSHHostProber{}
+		results := session.ProbeAllHosts(context.Background(), userConfig.Hosts, prober)
+		best, err := session.SelectBestHost(results)
+		if err != nil {
+			return session.HostConfig{}, err
+		}
+		if strings.TrimSpace(best.Config.SSHHost) == "" {
+			return session.HostConfig{}, fmt.Errorf("auto-selected host has empty ssh_host")
+		}
+		return best.Config, nil
+	}
+
+	hostCfg, ok := userConfig.Hosts[selection]
+	if !ok {
+		return session.HostConfig{}, fmt.Errorf("host '%s' not found in config", selection)
+	}
+	if strings.TrimSpace(hostCfg.SSHHost) == "" {
+		return session.HostConfig{}, fmt.Errorf("host '%s' has empty ssh_host", selection)
+	}
+	return hostCfg, nil
+}
+
 // createSessionInGroupWithWorktreeAndOptions creates a new session with full options including YOLO mode, sandbox, and tool options.
 func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	name, path, command, groupPath, worktreePath, worktreeRepoRoot, worktreeBranch string,
 	geminiYoloMode bool,
 	sandboxEnabled bool,
+	hostSelection string,
 	toolOptionsJSON json.RawMessage,
 ) tea.Cmd {
 	return func() tea.Msg {
@@ -5378,6 +5420,20 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 		// Apply sandbox config.
 		if sandboxEnabled {
 			inst.Sandbox = session.NewSandboxConfig("")
+		}
+
+		// Apply SSH host config.
+		hostSelection = strings.TrimSpace(hostSelection)
+		if hostSelection != "" && hostSelection != "local" {
+			if sandboxEnabled {
+				return sessionCreatedMsg{err: fmt.Errorf("host and sandbox cannot be enabled together")}
+			}
+			hostCfg, err := resolveSessionHostSelection(hostSelection)
+			if err != nil {
+				return sessionCreatedMsg{err: err}
+			}
+			inst.SSHHost = strings.TrimSpace(hostCfg.SSHHost)
+			inst.SSHRemotePath = strings.TrimSpace(hostCfg.DefaultPath)
 		}
 
 		uiLog.Info("session_create_starting",
@@ -5503,7 +5559,7 @@ func (h *Home) quickCreateSession() tea.Cmd {
 	return h.createSessionInGroupWithWorktreeAndOptions(
 		name, projectPath, command, groupPath,
 		"", "", "", // no worktree
-		geminiYoloMode, false, toolOptionsJSON,
+		geminiYoloMode, false, "local", toolOptionsJSON,
 	)
 }
 
