@@ -537,12 +537,39 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 		if opts.UseTeammateMode {
 			flags = append(flags, "--teammate-mode tmux")
 		}
+		if sdkURL := i.resolveClaudeSDKURL(opts); sdkURL != "" {
+			flags = append(flags, "--sdk-url "+sdkURL)
+		}
 	}
 
 	if len(flags) == 0 {
 		return ""
 	}
 	return " " + strings.Join(flags, " ")
+}
+
+func (i *Instance) resolveClaudeSDKURL(opts *ClaudeOptions) string {
+	if opts == nil || !opts.SDKMode {
+		return ""
+	}
+
+	// Explicit override: allow either a full URL with {instance_id} placeholder,
+	// or a base URL where we append the per-instance segment.
+	if override := strings.TrimSpace(opts.SDKURL); override != "" {
+		return ResolveClaudeSDKURL(override, i.ID)
+	}
+
+	bridge := GetDefaultClaudeSDKBridge()
+	if bridge == nil {
+		return ""
+	}
+
+	url, err := bridge.URLForInstance(i.ID)
+	if err != nil {
+		sessionLog.Warn("claude_sdk_bridge_url_failed", slog.String("instance_id", i.ID), slog.String("error", err.Error()))
+		return ""
+	}
+	return url
 }
 
 // buildGeminiCommand builds the gemini command with session capture
@@ -2336,6 +2363,8 @@ func (i *Instance) UpdateStatus() error {
 			}
 		case "dead":
 			i.Status = StatusError
+		case "idle":
+			i.Status = StatusIdle
 		}
 		if i.hookSessionID != "" {
 			switch i.Tool {
@@ -3927,6 +3956,10 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	} else if allowDangerousMode {
 		dangerousFlag = " --allow-dangerously-skip-permissions"
 	}
+	sdkFlag := ""
+	if sdkURL := i.resolveClaudeSDKURL(opts); sdkURL != "" {
+		sdkFlag = " --sdk-url " + sdkURL
+	}
 
 	// Build the command with tmux environment update.
 	// This ensures CLAUDE_SESSION_ID is set in tmux env after restart,
@@ -3935,11 +3968,11 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// fails — inside a Docker sandbox there is no tmux server.
 	if useResume {
 		return fmt.Sprintf("tmux set-environment CLAUDE_SESSION_ID %s 2>/dev/null; %s%s --resume %s%s",
-			i.ClaudeSessionID, configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag)
+			i.ClaudeSessionID, configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag+sdkFlag)
 	}
 	// Session was never interacted with - use --session-id to create fresh session.
 	return fmt.Sprintf("tmux set-environment CLAUDE_SESSION_ID %s 2>/dev/null; %s%s --session-id %s%s",
-		i.ClaudeSessionID, configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag)
+		i.ClaudeSessionID, configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag+sdkFlag)
 }
 
 // SetGeminiModel sets the Gemini model for this session and triggers a restart if running.

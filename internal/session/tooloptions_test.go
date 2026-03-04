@@ -85,6 +85,14 @@ func TestClaudeOptions_ToArgs(t *testing.T) {
 			expected: []string{"-c", "--dangerously-skip-permissions", "--chrome", "--teammate-mode", "tmux"},
 		},
 		{
+			name: "sdk mode with url",
+			opts: ClaudeOptions{
+				SDKMode: true,
+				SDKURL:  "ws://127.0.0.1:43123/claude-sdk/inst-1",
+			},
+			expected: []string{"--sdk-url", "ws://127.0.0.1:43123/claude-sdk/inst-1"},
+		},
+		{
 			name: "allow skip permissions only",
 			opts: ClaudeOptions{
 				AllowSkipPermissions: true,
@@ -160,6 +168,14 @@ func TestClaudeOptions_ToArgsForFork(t *testing.T) {
 			expected: []string{"--dangerously-skip-permissions", "--chrome", "--teammate-mode", "tmux"},
 		},
 		{
+			name: "sdk mode with url for fork",
+			opts: ClaudeOptions{
+				SDKMode: true,
+				SDKURL:  "ws://127.0.0.1:43123/claude-sdk/inst-1",
+			},
+			expected: []string{"--sdk-url", "ws://127.0.0.1:43123/claude-sdk/inst-1"},
+		},
+		{
 			name: "allow skip permissions for fork",
 			opts: ClaudeOptions{
 				AllowSkipPermissions: true,
@@ -192,6 +208,8 @@ func TestNewClaudeOptions_WithConfig(t *testing.T) {
 	config := &UserConfig{
 		Claude: ClaudeSettings{
 			DangerousMode: &dangerousModeBool,
+			SDKMode:       true,
+			SDKURL:        "ws://127.0.0.1:43123/claude-sdk",
 		},
 	}
 
@@ -202,6 +220,12 @@ func TestNewClaudeOptions_WithConfig(t *testing.T) {
 	}
 	if !opts.SkipPermissions {
 		t.Error("expected SkipPermissions=true when config.DangerousMode=true")
+	}
+	if !opts.SDKMode {
+		t.Error("expected SDKMode=true when config.Claude.SDKMode=true")
+	}
+	if opts.SDKURL != "ws://127.0.0.1:43123/claude-sdk" {
+		t.Errorf("expected SDKURL override to round-trip, got %q", opts.SDKURL)
 	}
 }
 
@@ -520,6 +544,30 @@ func TestClaudeOptions_RoundTrip_AllowSkipPermissions(t *testing.T) {
 	}
 	if restored.SkipPermissions {
 		t.Error("expected SkipPermissions=false after roundtrip")
+	}
+}
+
+func TestClaudeOptions_RoundTrip_SDKFields(t *testing.T) {
+	original := &ClaudeOptions{
+		SDKMode: true,
+		SDKURL:  "ws://127.0.0.1:43123/claude-sdk/{instance_id}",
+	}
+
+	data, err := MarshalToolOptions(original)
+	if err != nil {
+		t.Fatalf("MarshalToolOptions failed: %v", err)
+	}
+
+	restored, err := UnmarshalClaudeOptions(data)
+	if err != nil {
+		t.Fatalf("UnmarshalClaudeOptions failed: %v", err)
+	}
+
+	if !restored.SDKMode {
+		t.Error("expected SDKMode=true after roundtrip")
+	}
+	if restored.SDKURL != original.SDKURL {
+		t.Errorf("expected SDKURL=%q, got %q", original.SDKURL, restored.SDKURL)
 	}
 }
 

@@ -161,6 +161,10 @@ type ProfileSettings struct {
 type ProfileClaudeSettings struct {
 	// ConfigDir overrides [claude].config_dir for this profile only.
 	ConfigDir string `toml:"config_dir"`
+	// SDKMode overrides [claude].sdk_mode for this profile only.
+	SDKMode *bool `toml:"sdk_mode"`
+	// SDKURL overrides [claude].sdk_url for this profile only.
+	SDKURL string `toml:"sdk_url"`
 }
 
 // MCPPoolSettings defines HTTP MCP pool configuration
@@ -482,6 +486,14 @@ type ClaudeSettings struct {
 	// for instant, deterministic status updates instead of polling tmux content.
 	// Default: true (nil = use default true, set false to disable)
 	HooksEnabled *bool `toml:"hooks_enabled"`
+
+	// SDKMode enables Claude's hidden websocket SDK mode.
+	// Default: false (opt-in, keeps current interactive tmux behavior unchanged)
+	SDKMode bool `toml:"sdk_mode"`
+
+	// SDKURL optionally overrides the websocket URL used in SDK mode.
+	// Leave empty to use the embedded per-instance bridge URL.
+	SDKURL string `toml:"sdk_url"`
 }
 
 // GetProfileClaudeConfigDir returns the profile-specific Claude config directory, if configured.
@@ -1446,6 +1458,11 @@ func CreateExampleConfig() error {
 # config_dir = "~/.claude-work"
 # Enable --dangerously-skip-permissions by default (default: false)
 # dangerous_mode = true
+# Enable hidden Claude SDK websocket mode (default: false)
+# sdk_mode = true
+# Optional websocket override (if sdk_mode=true). If empty, agent-deck uses
+# an embedded per-instance bridge URL.
+# sdk_url = "ws://127.0.0.1:43123/claude-sdk/{instance_id}"
 
 # Gemini CLI integration
 # [gemini]

@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"strings"
 )
 
 // ToolOptions is the interface for tool-specific launch options
@@ -29,6 +30,10 @@ type ClaudeOptions struct {
 	UseChrome bool `json:"use_chrome,omitempty"`
 	// UseTeammateMode adds --teammate-mode tmux flag
 	UseTeammateMode bool `json:"use_teammate_mode,omitempty"`
+	// SDKMode enables Claude's hidden SDK websocket mode
+	SDKMode bool `json:"sdk_mode,omitempty"`
+	// SDKURL provides an optional SDK websocket URL override
+	SDKURL string `json:"sdk_url,omitempty"`
 
 	// Transient fields for worktree fork (not persisted)
 	WorkDir          string `json:"-"`
@@ -69,6 +74,11 @@ func (o *ClaudeOptions) ToArgs() []string {
 	if o.UseTeammateMode {
 		args = append(args, "--teammate-mode", "tmux")
 	}
+	if o.SDKMode {
+		if sdkURL := strings.TrimSpace(o.SDKURL); sdkURL != "" {
+			args = append(args, "--sdk-url", sdkURL)
+		}
+	}
 
 	return args
 }
@@ -89,6 +99,11 @@ func (o *ClaudeOptions) ToArgsForFork() []string {
 	if o.UseTeammateMode {
 		args = append(args, "--teammate-mode", "tmux")
 	}
+	if o.SDKMode {
+		if sdkURL := strings.TrimSpace(o.SDKURL); sdkURL != "" {
+			args = append(args, "--sdk-url", sdkURL)
+		}
+	}
 
 	return args
 }
@@ -101,6 +116,8 @@ func NewClaudeOptions(config *UserConfig) *ClaudeOptions {
 	if config != nil {
 		opts.SkipPermissions = config.Claude.GetDangerousMode()
 		opts.AllowSkipPermissions = config.Claude.AllowDangerousMode
+		opts.SDKMode = config.Claude.SDKMode
+		opts.SDKURL = strings.TrimSpace(config.Claude.SDKURL)
 	}
 	return opts
 }

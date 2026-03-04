@@ -2238,6 +2238,32 @@ func TestBuildClaudeExtraFlags_NilOpts(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeExtraFlags_SDKMode_UsesInstancePath(t *testing.T) {
+	inst := &Instance{ID: "inst-123", Tool: "claude"}
+	opts := &ClaudeOptions{
+		SDKMode: true,
+		SDKURL:  "ws://127.0.0.1:43123/claude-sdk",
+	}
+
+	flags := inst.buildClaudeExtraFlags(opts)
+	if !strings.Contains(flags, "--sdk-url ws://127.0.0.1:43123/claude-sdk/inst-123") {
+		t.Fatalf("expected per-instance --sdk-url flag, got %q", flags)
+	}
+}
+
+func TestBuildClaudeExtraFlags_SDKMode_UsesPlaceholderOverride(t *testing.T) {
+	inst := &Instance{ID: "inst-xyz", Tool: "claude"}
+	opts := &ClaudeOptions{
+		SDKMode: true,
+		SDKURL:  "ws://bridge.local/ws/{instance_id}",
+	}
+
+	flags := inst.buildClaudeExtraFlags(opts)
+	if !strings.Contains(flags, "--sdk-url ws://bridge.local/ws/inst-xyz") {
+		t.Fatalf("expected placeholder expansion in --sdk-url, got %q", flags)
+	}
+}
+
 // TestBuildClaudeCommand_ExportsInstanceID verifies that AGENTDECK_INSTANCE_ID
 // is included in the command string for Claude sessions.
 func TestBuildClaudeCommand_ExportsInstanceID(t *testing.T) {
@@ -2288,6 +2314,87 @@ func TestBuildClaudeResumeCommand_ExportsInstanceID(t *testing.T) {
 	expectedPrefix := "AGENTDECK_INSTANCE_ID=" + inst.ID
 	if !strings.Contains(cmd, expectedPrefix) {
 		t.Errorf("Resume command should contain %q, got: %s", expectedPrefix, cmd)
+	}
+}
+
+func TestBuildClaudeResumeCommand_IncludesSDKURLWhenEnabled(t *testing.T) {
+	origConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	origHome := os.Getenv("HOME")
+	os.Unsetenv("CLAUDE_CONFIG_DIR")
+	os.Setenv("HOME", t.TempDir())
+	ClearUserConfigCache()
+	defer func() {
+		if origConfigDir != "" {
+			os.Setenv("CLAUDE_CONFIG_DIR", origConfigDir)
+		}
+		os.Setenv("HOME", origHome)
+		ClearUserConfigCache()
+	}()
+
+	inst := NewInstanceWithTool("test", "/tmp/test", "claude")
+	inst.ClaudeSessionID = "abc-123-def"
+	require.NoError(t, inst.SetClaudeOptions(&ClaudeOptions{
+		SDKMode: true,
+		SDKURL:  "ws://127.0.0.1:43123/claude-sdk",
+	}))
+
+	cmd := inst.buildClaudeResumeCommand()
+	if !strings.Contains(cmd, "--sdk-url ws://127.0.0.1:43123/claude-sdk/"+inst.ID) {
+		t.Fatalf("resume command missing sdk url flag: %s", cmd)
+	}
+}
+
+func TestBuildClaudeCommand_IncludesSDKURLWhenEnabled(t *testing.T) {
+	origConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	origHome := os.Getenv("HOME")
+	os.Unsetenv("CLAUDE_CONFIG_DIR")
+	os.Setenv("HOME", t.TempDir())
+	ClearUserConfigCache()
+	defer func() {
+		if origConfigDir != "" {
+			os.Setenv("CLAUDE_CONFIG_DIR", origConfigDir)
+		}
+		os.Setenv("HOME", origHome)
+		ClearUserConfigCache()
+	}()
+
+	inst := NewInstanceWithTool("test", "/tmp/test", "claude")
+	require.NoError(t, inst.SetClaudeOptions(&ClaudeOptions{
+		SDKMode: true,
+		SDKURL:  "ws://127.0.0.1:43123/claude-sdk",
+	}))
+
+	cmd := inst.buildClaudeCommand("claude")
+	if !strings.Contains(cmd, "--sdk-url ws://127.0.0.1:43123/claude-sdk/"+inst.ID) {
+		t.Fatalf("start command missing sdk url flag: %s", cmd)
+	}
+}
+
+func TestInstance_ForkWithOptions_IncludesSDKURLWhenEnabled(t *testing.T) {
+	origConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	origHome := os.Getenv("HOME")
+	os.Unsetenv("CLAUDE_CONFIG_DIR")
+	os.Setenv("HOME", t.TempDir())
+	ClearUserConfigCache()
+	defer func() {
+		if origConfigDir != "" {
+			os.Setenv("CLAUDE_CONFIG_DIR", origConfigDir)
+		}
+		os.Setenv("HOME", origHome)
+		ClearUserConfigCache()
+	}()
+
+	inst := NewInstance("fork-parent", "/tmp/test")
+	inst.ClaudeSessionID = "parent-123"
+	inst.ClaudeDetectedAt = time.Now()
+
+	cmd, err := inst.ForkWithOptions("fork-child", "", &ClaudeOptions{
+		SDKMode: true,
+		SDKURL:  "ws://127.0.0.1:43123/claude-sdk",
+	})
+	require.NoError(t, err)
+	if !strings.Contains(cmd, "--sdk-url ws://127.0.0.1:43123/claude-sdk/"+inst.ID) {
+		t.Fatalf("fork command missing sdk url flag: %s", cmd)
 	}
 }
 

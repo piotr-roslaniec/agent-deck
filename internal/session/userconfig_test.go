@@ -676,6 +676,62 @@ func TestClaudeSettings_AllowDangerousMode_Default(t *testing.T) {
 	}
 }
 
+func TestClaudeSettings_SDKModeAndURL_TOML(t *testing.T) {
+	tmpDir := t.TempDir()
+	configContent := `
+[claude]
+sdk_mode = true
+sdk_url = "ws://127.0.0.1:43123/claude-sdk/{instance_id}"
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	var config UserConfig
+	_, err := toml.DecodeFile(configPath, &config)
+	if err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	if !config.Claude.SDKMode {
+		t.Error("Expected sdk_mode true")
+	}
+	if config.Claude.SDKURL != "ws://127.0.0.1:43123/claude-sdk/{instance_id}" {
+		t.Errorf("Unexpected sdk_url: %q", config.Claude.SDKURL)
+	}
+}
+
+func TestUserConfig_ProfileClaudeSDKOverride(t *testing.T) {
+	tmpDir := t.TempDir()
+	configContent := `
+[profiles.work.claude]
+sdk_mode = true
+sdk_url = "ws://sdk.local/bridge/{instance_id}"
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	var config UserConfig
+	_, err := toml.DecodeFile(configPath, &config)
+	if err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	profile, ok := config.Profiles["work"]
+	if !ok {
+		t.Fatal("Expected profiles.work to be present")
+	}
+	if profile.Claude.SDKMode == nil || !*profile.Claude.SDKMode {
+		t.Fatal("Expected profiles.work.claude.sdk_mode=true")
+	}
+	if profile.Claude.SDKURL != "ws://sdk.local/bridge/{instance_id}" {
+		t.Errorf("Unexpected profile sdk_url: %q", profile.Claude.SDKURL)
+	}
+}
+
 func TestGetNotificationsSettings_PartialConfig(t *testing.T) {
 	// Test that missing fields get defaults
 	tempDir := t.TempDir()
