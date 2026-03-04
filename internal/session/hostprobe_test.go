@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -16,6 +17,20 @@ func (f *fakeHostProber) Probe(ctx context.Context, sshHost string) (HostMetrics
 	_ = sshHost
 	f.calls++
 	return HostMetrics{CPUPercent: 10, RAMPercent: 20, DiskPercent: 30}, nil
+}
+
+func setHostProbeSettingsForTest(t *testing.T, threshold float64, ttl time.Duration) {
+	t.Helper()
+	prevThreshold := remoteOverloadThresholdProvider
+	prevTTL := remoteProbeCacheTTLProvider
+
+	remoteOverloadThresholdProvider = func() float64 { return threshold }
+	remoteProbeCacheTTLProvider = func() time.Duration { return ttl }
+
+	t.Cleanup(func() {
+		remoteOverloadThresholdProvider = prevThreshold
+		remoteProbeCacheTTLProvider = prevTTL
+	})
 }
 
 func TestParseProbeOutput_Valid(t *testing.T) {
@@ -50,6 +65,8 @@ func TestParseProbeOutput_Empty(t *testing.T) {
 }
 
 func TestScoring_MinPeak(t *testing.T) {
+	setHostProbeSettingsForTest(t, defaultOverloadThreshold, probeCacheTTL)
+
 	results := []HostProbeResult{
 		{Name: "high", Metrics: HostMetrics{CPUPercent: 70, RAMPercent: 30, DiskPercent: 20}},
 		{Name: "low", Metrics: HostMetrics{CPUPercent: 20, RAMPercent: 20, DiskPercent: 20}},
@@ -64,6 +81,8 @@ func TestScoring_MinPeak(t *testing.T) {
 }
 
 func TestScoring_Tiebreak(t *testing.T) {
+	setHostProbeSettingsForTest(t, defaultOverloadThreshold, probeCacheTTL)
+
 	results := []HostProbeResult{
 		{Name: "higher-avg", Metrics: HostMetrics{CPUPercent: 50, RAMPercent: 50, DiskPercent: 30}},
 		{Name: "lower-avg", Metrics: HostMetrics{CPUPercent: 50, RAMPercent: 20, DiskPercent: 10}},
@@ -78,6 +97,8 @@ func TestScoring_Tiebreak(t *testing.T) {
 }
 
 func TestScoring_AllOverloaded(t *testing.T) {
+	setHostProbeSettingsForTest(t, defaultOverloadThreshold, probeCacheTTL)
+
 	results := []HostProbeResult{
 		{Name: "a", Metrics: HostMetrics{CPUPercent: 90, RAMPercent: 90, DiskPercent: 90}},
 	}
@@ -85,9 +106,14 @@ func TestScoring_AllOverloaded(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for all overloaded")
 	}
+	if !strings.Contains(err.Error(), "threshold: 80%") {
+		t.Fatalf("expected overload error to include threshold, got: %v", err)
+	}
 }
 
 func TestScoring_SingleHost(t *testing.T) {
+	setHostProbeSettingsForTest(t, defaultOverloadThreshold, probeCacheTTL)
+
 	results := []HostProbeResult{
 		{Name: "only", Metrics: HostMetrics{CPUPercent: 30, RAMPercent: 40, DiskPercent: 50}},
 	}
@@ -101,6 +127,8 @@ func TestScoring_SingleHost(t *testing.T) {
 }
 
 func TestScoring_UnreachableSkipped(t *testing.T) {
+	setHostProbeSettingsForTest(t, defaultOverloadThreshold, probeCacheTTL)
+
 	results := []HostProbeResult{
 		{Name: "dead", Err: fmt.Errorf("timeout")},
 		{Name: "alive", Metrics: HostMetrics{CPUPercent: 30, RAMPercent: 30, DiskPercent: 30}},
@@ -115,6 +143,8 @@ func TestScoring_UnreachableSkipped(t *testing.T) {
 }
 
 func TestCacheTTL(t *testing.T) {
+	setHostProbeSettingsForTest(t, defaultOverloadThreshold, probeCacheTTL)
+
 	cache := &HostProbeCache{entries: make(map[string]cachedProbe)}
 	result := HostProbeResult{Name: "test", Metrics: HostMetrics{CPUPercent: 10}}
 	cache.Set("test", result)
@@ -147,6 +177,8 @@ func TestCacheTTL(t *testing.T) {
 }
 
 func TestCacheMaxEntries_EvictsOldestEntry(t *testing.T) {
+	setHostProbeSettingsForTest(t, defaultOverloadThreshold, probeCacheTTL)
+
 	cache := &HostProbeCache{
 		entries:    make(map[string]cachedProbe),
 		maxEntries: 2,
@@ -178,6 +210,8 @@ func TestCacheMaxEntries_EvictsOldestEntry(t *testing.T) {
 }
 
 func TestCacheMaxEntries_UpdateExistingKeyDoesNotEvict(t *testing.T) {
+	setHostProbeSettingsForTest(t, defaultOverloadThreshold, probeCacheTTL)
+
 	cache := &HostProbeCache{
 		entries:    make(map[string]cachedProbe),
 		maxEntries: 1,
@@ -197,6 +231,8 @@ func TestCacheMaxEntries_UpdateExistingKeyDoesNotEvict(t *testing.T) {
 }
 
 func TestCacheInvalidation(t *testing.T) {
+	setHostProbeSettingsForTest(t, defaultOverloadThreshold, probeCacheTTL)
+
 	cache := &HostProbeCache{entries: make(map[string]cachedProbe)}
 	hosts1 := map[string]HostConfig{"a": {SSHHost: "host-a"}}
 	hosts2 := map[string]HostConfig{"b": {SSHHost: "host-b"}}
@@ -212,6 +248,8 @@ func TestCacheInvalidation(t *testing.T) {
 }
 
 func TestHostConfigHash_ChangesWhenMetadataChanges(t *testing.T) {
+	setHostProbeSettingsForTest(t, defaultOverloadThreshold, probeCacheTTL)
+
 	base := map[string]HostConfig{
 		"dev": {SSHHost: "pi@devbox", Description: "main", DefaultPath: "/srv/app"},
 	}
@@ -232,6 +270,8 @@ func TestHostConfigHash_ChangesWhenMetadataChanges(t *testing.T) {
 }
 
 func TestProbeAllHosts_CacheHitUsesLatestConfig(t *testing.T) {
+	setHostProbeSettingsForTest(t, defaultOverloadThreshold, probeCacheTTL)
+
 	hostProbeCache = &HostProbeCache{entries: make(map[string]cachedProbe)}
 	prober := &fakeHostProber{}
 	ctx := context.Background()
@@ -263,5 +303,34 @@ func TestProbeAllHosts_CacheHitUsesLatestConfig(t *testing.T) {
 	}
 	if prober.calls != 1 {
 		t.Fatalf("expected cache hit to avoid extra probe, got %d calls", prober.calls)
+	}
+}
+
+func TestScoring_UsesConfiguredOverloadThreshold(t *testing.T) {
+	setHostProbeSettingsForTest(t, 95, probeCacheTTL)
+
+	results := []HostProbeResult{
+		{Name: "high", Metrics: HostMetrics{CPUPercent: 90, RAMPercent: 20, DiskPercent: 20}},
+	}
+	best, err := SelectBestHost(results)
+	if err != nil {
+		t.Fatalf("expected host to remain selectable with higher threshold: %v", err)
+	}
+	if best.Name != "high" {
+		t.Fatalf("best = %s, want high", best.Name)
+	}
+}
+
+func TestCache_UsesConfiguredProbeCacheTTL(t *testing.T) {
+	setHostProbeSettingsForTest(t, defaultOverloadThreshold, 5*time.Millisecond)
+
+	cache := &HostProbeCache{entries: make(map[string]cachedProbe)}
+	cache.Set("fast-expire", HostProbeResult{Name: "fast-expire"})
+
+	time.Sleep(10 * time.Millisecond)
+
+	_, ok := cache.Get("fast-expire")
+	if ok {
+		t.Fatal("expected entry to expire using configured probe cache ttl")
 	}
 }

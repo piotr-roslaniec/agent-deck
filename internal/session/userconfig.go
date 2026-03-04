@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
@@ -115,6 +116,9 @@ type UserConfig struct {
 	// These are simpler than [remotes] — just SSH destination + metadata
 	Hosts map[string]HostConfig `toml:"hosts"`
 
+	// Remote defines host probing behavior for remote host selection.
+	Remote RemoteSettings `toml:"remote"`
+
 	// Remotes defines named SSH remote agent-deck instances
 	Remotes map[string]RemoteConfig `toml:"remotes"`
 }
@@ -123,6 +127,30 @@ type HostConfig struct {
 	SSHHost     string `toml:"ssh_host"` // SSH destination (must be in ~/.ssh/config or user@host)
 	Description string `toml:"description"`
 	DefaultPath string `toml:"default_path"` // Default CWD on remote
+}
+
+type RemoteSettings struct {
+	OverloadThreshold float64 `toml:"overload_threshold"`
+	ProbeCacheTTL     string  `toml:"probe_cache_ttl"`
+}
+
+func (r RemoteSettings) GetOverloadThreshold() float64 {
+	if r.OverloadThreshold <= 0 || r.OverloadThreshold > 100 {
+		return 80.0
+	}
+	return r.OverloadThreshold
+}
+
+func (r RemoteSettings) GetProbeCacheTTL() time.Duration {
+	raw := strings.TrimSpace(r.ProbeCacheTTL)
+	if raw == "" {
+		return 30 * time.Second
+	}
+	ttl, err := time.ParseDuration(raw)
+	if err != nil || ttl <= 0 {
+		return 30 * time.Second
+	}
+	return ttl
 }
 
 // RemoteConfig defines a remote agent-deck instance accessible via SSH.
@@ -893,6 +921,25 @@ func validateSSHHost(sshHost string) error {
 	return nil
 }
 
+func validateRemoteSettings(remote RemoteSettings) error {
+	if remote.OverloadThreshold != 0 && (remote.OverloadThreshold <= 0 || remote.OverloadThreshold > 100) {
+		return fmt.Errorf("remote.overload_threshold must be > 0 and <= 100, got %v", remote.OverloadThreshold)
+	}
+
+	ttl := strings.TrimSpace(remote.ProbeCacheTTL)
+	if ttl == "" {
+		return nil
+	}
+	parsed, err := time.ParseDuration(ttl)
+	if err != nil {
+		return fmt.Errorf("remote.probe_cache_ttl must be a valid duration (e.g. \"30s\"): %w", err)
+	}
+	if parsed <= 0 {
+		return fmt.Errorf("remote.probe_cache_ttl must be > 0")
+	}
+	return nil
+}
+
 // GetUserConfigPath returns the path to the user config file
 func GetUserConfigPath() (string, error) {
 	dir, err := GetAgentDeckDir()
@@ -950,6 +997,10 @@ func LoadUserConfig() (*UserConfig, error) {
 		config.MCPs = make(map[string]MCPDef)
 	}
 	if err := validateHostConfigs(config.Hosts); err != nil {
+		userConfigCache = &defaultUserConfig
+		return userConfigCache, fmt.Errorf("config.toml validation error: %w", err)
+	}
+	if err := validateRemoteSettings(config.Remote); err != nil {
 		userConfigCache = &defaultUserConfig
 		return userConfigCache, fmt.Errorf("config.toml validation error: %w", err)
 	}
@@ -1393,6 +1444,15 @@ func GetDockerSettings() DockerSettings {
 	return config.Docker
 }
 
+// GetRemoteSettings returns remote host probing settings with defaults applied.
+func GetRemoteSettings() RemoteSettings {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return RemoteSettings{}
+	}
+	return config.Remote
+}
+
 // GetTmuxSettings returns tmux option overrides from config
 func GetTmuxSettings() TmuxSettings {
 	config, err := LoadUserConfig()
@@ -1574,6 +1634,14 @@ auto_cleanup = true
 # Set to false if you manage .mcp.json manually or via another tool and don't
 # want agent-deck to touch it. LOCAL-scope MCP changes will be silently skipped.
 # manage_mcp_json = false
+
+# Remote host probe settings
+# Used by --host auto and host health checks.
+# [remote]
+# Consider hosts overloaded at or above this percent (default: 80)
+# overload_threshold = 80
+# TTL for host probe cache entries (default: "30s")
+# probe_cache_ttl = "30s"
 
 # Tmux session settings
 # Controls how agent-deck configures tmux sessions

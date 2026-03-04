@@ -114,6 +114,14 @@ const defaultOverloadThreshold = 80.0
 const probeCacheTTL = 30 * time.Second
 const probeCacheMaxEntries = 256
 
+var remoteOverloadThresholdProvider = func() float64 {
+	return GetRemoteSettings().GetOverloadThreshold()
+}
+
+var remoteProbeCacheTTLProvider = func() time.Duration {
+	return GetRemoteSettings().GetProbeCacheTTL()
+}
+
 var hostProbeCache = &HostProbeCache{
 	entries:    make(map[string]cachedProbe),
 	maxEntries: probeCacheMaxEntries,
@@ -132,6 +140,7 @@ type HostProbeCache struct {
 }
 
 func (c *HostProbeCache) Get(name string) (HostProbeResult, bool) {
+	ttl := remoteProbeCacheTTLProvider()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -139,7 +148,7 @@ func (c *HostProbeCache) Get(name string) (HostProbeResult, bool) {
 	if !ok {
 		return HostProbeResult{}, false
 	}
-	if time.Since(entry.at) > probeCacheTTL {
+	if time.Since(entry.at) > ttl {
 		delete(c.entries, name)
 		return HostProbeResult{}, false
 	}
@@ -148,6 +157,7 @@ func (c *HostProbeCache) Get(name string) (HostProbeResult, bool) {
 }
 
 func (c *HostProbeCache) Set(name string, result HostProbeResult) {
+	ttl := remoteProbeCacheTTLProvider()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -157,7 +167,7 @@ func (c *HostProbeCache) Set(name string, result HostProbeResult) {
 		return
 	}
 
-	c.pruneExpiredLocked(now)
+	c.pruneExpiredLocked(now, ttl)
 	if len(c.entries) >= c.effectiveMaxEntriesLocked() {
 		c.evictOldestLocked()
 	}
@@ -186,9 +196,9 @@ func (c *HostProbeCache) evictOldestLocked() {
 	}
 }
 
-func (c *HostProbeCache) pruneExpiredLocked(now time.Time) {
+func (c *HostProbeCache) pruneExpiredLocked(now time.Time, ttl time.Duration) {
 	for key, entry := range c.entries {
-		if now.Sub(entry.at) > probeCacheTTL {
+		if now.Sub(entry.at) > ttl {
 			delete(c.entries, key)
 		}
 	}
@@ -266,6 +276,11 @@ func ProbeAllHosts(ctx context.Context, hosts map[string]HostConfig, prober Host
 // SelectBestHost picks the least loaded host from probe results.
 // Returns error if all hosts are overloaded (any metric >= threshold).
 func SelectBestHost(results []HostProbeResult) (HostProbeResult, error) {
+	threshold := remoteOverloadThresholdProvider()
+	if threshold <= 0 || threshold > 100 {
+		threshold = defaultOverloadThreshold
+	}
+
 	var healthy []HostProbeResult
 	for _, r := range results {
 		if r.Err != nil {
@@ -281,7 +296,7 @@ func SelectBestHost(results []HostProbeResult) (HostProbeResult, error) {
 	var candidates []HostProbeResult
 	for _, r := range healthy {
 		peak := maxFloat64(r.Metrics.CPUPercent, maxFloat64(r.Metrics.RAMPercent, r.Metrics.DiskPercent))
-		if peak < defaultOverloadThreshold {
+		if peak < threshold {
 			candidates = append(candidates, r)
 		}
 	}
@@ -289,7 +304,7 @@ func SelectBestHost(results []HostProbeResult) (HostProbeResult, error) {
 	if len(candidates) == 0 {
 		// All overloaded — build error message
 		var sb strings.Builder
-		sb.WriteString("all hosts overloaded (threshold: 80%):\n")
+		fmt.Fprintf(&sb, "all hosts overloaded (threshold: %.0f%%):\n", threshold)
 		for _, r := range healthy {
 			fmt.Fprintf(&sb, "  %s: cpu=%.0f%% ram=%.0f%% disk=%.0f%%\n",
 				r.Name, r.Metrics.CPUPercent, r.Metrics.RAMPercent, r.Metrics.DiskPercent)

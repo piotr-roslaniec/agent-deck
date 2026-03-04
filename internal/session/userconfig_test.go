@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -341,6 +342,112 @@ default_path = "/srv/dev"
 	}
 	if host.SSHHost != "pi@devbox" {
 		t.Fatalf("SSHHost = %q, want %q", host.SSHHost, "pi@devbox")
+	}
+}
+
+func TestUserConfig_RemoteSectionDecode(t *testing.T) {
+	tmpDir := t.TempDir()
+	configContent := `
+[remote]
+overload_threshold = 72.5
+probe_cache_ttl = "45s"
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	var config UserConfig
+	_, err := toml.DecodeFile(configPath, &config)
+	if err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	if config.Remote.OverloadThreshold != 72.5 {
+		t.Fatalf("OverloadThreshold = %v, want 72.5", config.Remote.OverloadThreshold)
+	}
+	if config.Remote.ProbeCacheTTL != "45s" {
+		t.Fatalf("ProbeCacheTTL = %q, want %q", config.Remote.ProbeCacheTTL, "45s")
+	}
+}
+
+func TestGetRemoteSettings_Defaults(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	settings := GetRemoteSettings()
+	if got := settings.GetOverloadThreshold(); got != 80.0 {
+		t.Fatalf("GetOverloadThreshold() = %v, want 80", got)
+	}
+	if got := settings.GetProbeCacheTTL(); got != 30*time.Second {
+		t.Fatalf("GetProbeCacheTTL() = %v, want 30s", got)
+	}
+}
+
+func TestGetRemoteSettings_FromConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("Failed to create agent-deck dir: %v", err)
+	}
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	content := `
+[remote]
+overload_threshold = 65
+probe_cache_ttl = "90s"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	ClearUserConfigCache()
+	settings := GetRemoteSettings()
+	if got := settings.GetOverloadThreshold(); got != 65 {
+		t.Fatalf("GetOverloadThreshold() = %v, want 65", got)
+	}
+	if got := settings.GetProbeCacheTTL(); got != 90*time.Second {
+		t.Fatalf("GetProbeCacheTTL() = %v, want 90s", got)
+	}
+}
+
+func TestLoadUserConfig_RejectsInvalidRemoteSettings(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("Failed to create agent-deck dir: %v", err)
+	}
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	content := `
+[remote]
+overload_threshold = 0
+probe_cache_ttl = "not-a-duration"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	ClearUserConfigCache()
+	_, err := LoadUserConfig()
+	if err == nil {
+		t.Fatal("LoadUserConfig should fail for invalid remote settings")
+	}
+	if !strings.Contains(err.Error(), "remote.overload_threshold") &&
+		!strings.Contains(err.Error(), "remote.probe_cache_ttl") {
+		t.Fatalf("expected remote settings validation error, got: %v", err)
 	}
 }
 
