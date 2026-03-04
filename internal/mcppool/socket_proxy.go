@@ -49,6 +49,7 @@ type SocketProxy struct {
 	Status        ServerStatus
 	statusMu      sync.RWMutex // Protects Status field
 	lastRestart   time.Time    // For rate limiting restarts
+	restartWindow []time.Time  // Restart timestamps within rolling limiter window
 	restartCount  int          // Track restart attempts
 	totalFailures int          // Cumulative failures across all restarts
 	successSince  time.Time    // When the proxy last became StatusRunning

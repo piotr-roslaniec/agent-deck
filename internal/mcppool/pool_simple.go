@@ -269,7 +269,29 @@ func (p *Pool) restartFailedProxies() {
 // maxTotalRestartFailures is the maximum number of cumulative failures before
 // a proxy is permanently disabled. This prevents infinite restart loops for
 // broken MCPs (e.g., removed npm packages) from leaking memory.
-const maxTotalRestartFailures = 10
+const (
+	maxTotalRestartFailures = 10
+	minRestartInterval      = 5 * time.Second
+	maxRestartsPerMinute    = 3
+	restartWindowDuration   = time.Minute
+)
+
+func restartsWithinWindow(history []time.Time, now time.Time) []time.Time {
+	if len(history) == 0 {
+		return nil
+	}
+
+	cutoff := now.Add(-restartWindowDuration)
+	filtered := make([]time.Time, 0, len(history))
+	for _, ts := range history {
+		// Keep boundary timestamps (exactly 60s old) in the window to avoid
+		// bypassing the limiter when restart attempts cluster at minute edges.
+		if !ts.Before(cutoff) {
+			filtered = append(filtered, ts)
+		}
+	}
+	return filtered
+}
 
 // RestartProxyWithRateLimit restarts a proxy with rate limiting to prevent loops
 func (p *Pool) RestartProxyWithRateLimit(name string) error {
@@ -293,13 +315,19 @@ func (p *Pool) RestartProxyWithRateLimit(name string) error {
 		return fmt.Errorf("proxy %s permanently disabled after %d failures", name, proxy.totalFailures)
 	}
 
-	// Rate limit: minimum 5 seconds between restarts, max 3 per minute
-	if time.Since(proxy.lastRestart) < 5*time.Second {
-		return fmt.Errorf("rate limited: last restart was %v ago", time.Since(proxy.lastRestart))
+	now := time.Now()
+
+	// Rate limit: minimum 5 seconds between restarts
+	if !proxy.lastRestart.IsZero() && now.Sub(proxy.lastRestart) < minRestartInterval {
+		return fmt.Errorf("rate limited: last restart was %v ago", now.Sub(proxy.lastRestart))
 	}
-	if proxy.restartCount >= 3 && time.Since(proxy.lastRestart) < time.Minute {
-		return fmt.Errorf("rate limited: %d restarts in last minute", proxy.restartCount)
+
+	// Rate limit: max 3 restarts in a rolling one-minute window
+	recentRestarts := restartsWithinWindow(proxy.restartWindow, now)
+	if len(recentRestarts) >= maxRestartsPerMinute {
+		return fmt.Errorf("rate limited: %d restarts in last minute", len(recentRestarts))
 	}
+	nextRestartWindow := append(append([]time.Time(nil), recentRestarts...), now)
 
 	poolLog.Info("auto_restart", slog.String("mcp", name), slog.Int("total_failures", proxy.totalFailures), slog.Int("max_failures", maxTotalRestartFailures))
 
@@ -329,7 +357,8 @@ func (p *Pool) RestartProxyWithRateLimit(name string) error {
 		// health monitor can see it and eventually mark it permanently failed
 		newProxy.totalFailures = prevTotalFailures + 1
 		newProxy.restartCount = prevRestartCount + 1
-		newProxy.lastRestart = time.Now()
+		newProxy.lastRestart = now
+		newProxy.restartWindow = nextRestartWindow
 		if newProxy.totalFailures >= maxTotalRestartFailures {
 			poolLog.Error("permanently_disabled", slog.String("mcp", name), slog.Int("total_failures", newProxy.totalFailures))
 			newProxy.SetStatus(StatusPermanentlyFailed)
@@ -344,7 +373,8 @@ func (p *Pool) RestartProxyWithRateLimit(name string) error {
 	// Track restart history
 	newProxy.restartCount = prevRestartCount + 1
 	newProxy.totalFailures = prevTotalFailures
-	newProxy.lastRestart = time.Now()
+	newProxy.lastRestart = now
+	newProxy.restartWindow = nextRestartWindow
 
 	p.proxies[name] = newProxy
 	poolLog.Info("restart_complete", slog.String("mcp", name), slog.Int("restart_num", newProxy.restartCount))
