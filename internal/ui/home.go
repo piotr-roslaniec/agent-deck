@@ -4343,7 +4343,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
-				h.confirmDialog.ShowDeleteSession(item.Session.ID, item.Session.Title, item.Session.IsSandboxed())
+				h.confirmDialog.ShowDeleteSession(
+					item.Session.ID,
+					item.Session.Title,
+					item.Session.IsSandboxed(),
+					item.Session.Adopted,
+				)
 			} else if item.Type == session.ItemTypeGroup && item.Path != session.DefaultGroupPath {
 				h.confirmDialog.ShowDeleteGroup(item.Path, item.Group.Name)
 			}
@@ -5622,8 +5627,18 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 	isWorktree := inst.IsWorktree()
 	worktreePath := inst.WorktreePath
 	worktreeRepoRoot := inst.WorktreeRepoRoot
+	isAdopted := inst.Adopted
+	localProxyTmux := inst.GetTmuxSession()
 	return func() tea.Msg {
-		killErr := inst.Kill()
+		var killErr error
+		if isAdopted {
+			if localProxyTmux != nil {
+				killErr = localProxyTmux.Kill()
+			}
+			inst.SetStatusThreadSafe(session.StatusError)
+		} else {
+			killErr = inst.Kill()
+		}
 		if isWorktree {
 			_ = git.RemoveWorktree(worktreeRepoRoot, worktreePath, false)
 			_ = git.PruneWorktrees(worktreeRepoRoot)
@@ -7557,7 +7572,11 @@ func (h *Home) renderSessionItem(b *strings.Builder, item session.Item, selected
 		}
 	}
 
-	title := titleStyle.Render(inst.Title)
+	titleText := inst.Title
+	if inst.IsSSH() || inst.Adopted {
+		titleText = "↗ " + titleText
+	}
+	title := titleStyle.Render(titleText)
 	tool := toolStyle.Render(" " + instTool)
 
 	// YOLO badge for Gemini sessions with YOLO mode enabled

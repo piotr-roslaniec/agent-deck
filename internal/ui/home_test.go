@@ -51,6 +51,69 @@ func TestHomeView(t *testing.T) {
 	}
 }
 
+func TestRenderSessionListShowsRemoteIndicatorForSSHAndAdopted(t *testing.T) {
+	cases := []struct {
+		name string
+		inst *session.Instance
+	}{
+		{
+			name: "ssh_session",
+			inst: func() *session.Instance {
+				inst := session.NewInstance("ssh-session", "/tmp/project")
+				inst.SSHHost = "dev@host"
+				return inst
+			}(),
+		},
+		{
+			name: "adopted_session",
+			inst: session.NewAdoptedInstance(
+				"adopted-session",
+				"/tmp/project",
+				session.DefaultGroupPath,
+				"shell",
+				"dev@host",
+				"legacy-session",
+			),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := NewHome()
+			home.width = 100
+			home.height = 30
+			home.instancesMu.Lock()
+			home.instances = []*session.Instance{tc.inst}
+			home.instancesMu.Unlock()
+			home.groupTree = session.NewGroupTree(home.instances)
+			home.rebuildFlatItems()
+
+			rendered := home.renderSessionList(100, 20)
+			if !strings.Contains(rendered, "↗ "+tc.inst.Title) {
+				t.Fatalf("rendered list missing remote/adopted indicator: %q", rendered)
+			}
+		})
+	}
+}
+
+func TestRenderSessionListDoesNotShowRemoteIndicatorForLocalSession(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	inst := session.NewInstance("local-session", "/tmp/project")
+	home.instancesMu.Lock()
+	home.instances = []*session.Instance{inst}
+	home.instancesMu.Unlock()
+	home.groupTree = session.NewGroupTree(home.instances)
+	home.rebuildFlatItems()
+
+	rendered := home.renderSessionList(100, 20)
+	if strings.Contains(rendered, "↗ "+inst.Title) {
+		t.Fatalf("rendered list unexpectedly contains remote indicator for local session: %q", rendered)
+	}
+}
+
 func TestHomeUpdateQuit(t *testing.T) {
 	home := NewHome()
 	home.width = 100

@@ -30,6 +30,7 @@ type ConfirmDialog struct {
 	height      int
 	mcpCount    int  // Number of running MCPs (for quit confirmation)
 	sandboxed   bool // Whether the session uses a Docker sandbox.
+	adopted     bool // Whether the session is an adopted remote proxy session.
 
 	// Pending session creation data (for ConfirmCreateDirectory)
 	pendingSessionName      string
@@ -45,12 +46,13 @@ func NewConfirmDialog() *ConfirmDialog {
 }
 
 // ShowDeleteSession shows confirmation for session deletion.
-func (c *ConfirmDialog) ShowDeleteSession(sessionID string, sessionName string, sandboxed bool) {
+func (c *ConfirmDialog) ShowDeleteSession(sessionID string, sessionName string, sandboxed, adopted bool) {
 	c.visible = true
 	c.confirmType = ConfirmDeleteSession
 	c.targetID = sessionID
 	c.targetName = sessionName
 	c.sandboxed = sandboxed
+	c.adopted = adopted
 }
 
 // ShowDeleteGroup shows confirmation for group deletion
@@ -108,6 +110,7 @@ func (c *ConfirmDialog) Hide() {
 	c.targetID = ""
 	c.targetName = ""
 	c.sandboxed = false
+	c.adopted = false
 }
 
 // IsVisible returns whether the dialog is visible
@@ -175,11 +178,15 @@ func (c *ConfirmDialog) View() string {
 	case ConfirmDeleteSession:
 		title = "⚠  Delete Session?"
 		warning = fmt.Sprintf("This will permanently delete the session:\n\n  \"%s\"", c.targetName)
-		details = "• The tmux session will be terminated\n• Any running processes will be killed\n• Terminal history will be lost"
-		if c.sandboxed {
-			details += "\n• The Docker container will be removed"
+		if c.adopted {
+			details = "• The local reference will be removed\n• The remote tmux session stays alive\n• Press Ctrl+Z after deletion to undo"
+		} else {
+			details = "• The tmux session will be terminated\n• Any running processes will be killed\n• Terminal history will be lost"
+			if c.sandboxed {
+				details += "\n• The Docker container will be removed"
+			}
+			details += "\n• Press Ctrl+Z after deletion to undo"
 		}
-		details += "\n• Press Ctrl+Z after deletion to undo"
 		borderColor = ColorRed
 
 		buttonYes := lipgloss.NewStyle().
