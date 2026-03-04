@@ -1,6 +1,7 @@
 package session
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -25,5 +26,18 @@ func TestWrapForSSH_QuotesSSHHost(t *testing.T) {
 
 	if !strings.Contains(wrapped, "'user@host -oProxyCommand=bad'") {
 		t.Fatalf("expected wrapped SSH host to be single-quoted, got: %s", wrapped)
+	}
+}
+
+func TestSSHControlPathPattern_UsesHashedToken(t *testing.T) {
+	got := sshControlPathPattern()
+	if !strings.Contains(got, "%C") {
+		t.Fatalf("expected control path to contain %%C, got: %s", got)
+	}
+	if strings.Contains(got, "%r@%h:%p") {
+		t.Fatalf("expected legacy token to be removed, got: %s", got)
+	}
+	if filepath.Base(got) != "%C" {
+		t.Fatalf("expected basename to be %%C, got: %s", filepath.Base(got))
 	}
 }

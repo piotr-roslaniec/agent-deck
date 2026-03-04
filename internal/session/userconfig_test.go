@@ -244,6 +244,40 @@ func TestSaveUserConfig(t *testing.T) {
 	}
 }
 
+func TestUserConfig_HostsSectionDecode(t *testing.T) {
+	tmpDir := t.TempDir()
+	configContent := `
+[hosts.dev]
+ssh_host = "pi@devbox"
+description = "Dev machine"
+default_path = "/srv/dev"
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	var config UserConfig
+	_, err := toml.DecodeFile(configPath, &config)
+	if err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	host, ok := config.Hosts["dev"]
+	if !ok {
+		t.Fatal("expected hosts.dev to be present")
+	}
+	if host.SSHHost != "pi@devbox" {
+		t.Fatalf("SSHHost = %q, want %q", host.SSHHost, "pi@devbox")
+	}
+	if host.Description != "Dev machine" {
+		t.Fatalf("Description = %q, want %q", host.Description, "Dev machine")
+	}
+	if host.DefaultPath != "/srv/dev" {
+		t.Fatalf("DefaultPath = %q, want %q", host.DefaultPath, "/srv/dev")
+	}
+}
+
 func TestGetTheme_Default(t *testing.T) {
 	// Setup: use temp directory with no config
 	tempDir := t.TempDir()

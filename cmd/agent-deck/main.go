@@ -225,6 +225,9 @@ func main() {
 		case "session":
 			handleSession(profile, args[1:])
 			return
+		case "host":
+			handleHost(profile, args[1:])
+			return
 		case "mcp":
 			handleMCP(profile, args[1:])
 			return
@@ -2139,6 +2142,7 @@ func printHelp() {
 	fmt.Println("  rename, mv       Rename a session")
 	fmt.Println("  status           Show session status summary")
 	fmt.Println("  session          Manage session lifecycle")
+	fmt.Println("  host             Manage SSH hosts for remote sessions")
 	fmt.Println("  mcp              Manage MCP servers")
 	fmt.Println("  skill            Manage Claude skills")
 	fmt.Println("  codex-hooks      Manage Codex notify hook integration")

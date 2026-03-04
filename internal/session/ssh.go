@@ -7,12 +7,40 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
-// sshControlDir is the directory for SSH ControlMaster sockets.
-const sshControlDir = "/tmp/agent-deck-ssh"
+func sshSocketDir() string {
+	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
+		return filepath.Join(xdg, "agent-deck-ssh")
+	}
+	return "/tmp/agent-deck-ssh"
+}
+
+func sshControlPathPattern() string {
+	return filepath.Join(sshSocketDir(), "%C")
+}
+
+func CleanupStaleSockets() {
+	dir := sshSocketDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	cutoff := time.Now().Add(-1 * time.Hour)
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+}
 
 // SSHRunner executes commands on a remote host via SSH.
 type SSHRunner struct {
@@ -32,7 +60,9 @@ func NewSSHRunner(name string, rc RemoteConfig) *SSHRunner {
 
 // Run executes an agent-deck command on the remote host and returns stdout.
 func (r *SSHRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
-	_ = os.MkdirAll(sshControlDir, 0700)
+	controlDir := sshSocketDir()
+	controlPath := sshControlPathPattern()
+	_ = os.MkdirAll(controlDir, 0700)
 
 	remoteCmd := r.buildRemoteCommand(args...)
 
@@ -42,7 +72,7 @@ func (r *SSHRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
 
 	sshArgs := []string{
 		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
+		"-o", "ControlPath=" + controlPath,
 		"-o", "ControlPersist=600",
 		"-o", "ConnectTimeout=10",
 		"-o", "BatchMode=yes",
@@ -65,14 +95,16 @@ func (r *SSHRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
 // Attach connects interactively to a remote agent-deck session.
 // This connects stdin/stdout/stderr for full terminal interaction.
 func (r *SSHRunner) Attach(sessionID string) error {
-	_ = os.MkdirAll(sshControlDir, 0700)
+	controlDir := sshSocketDir()
+	controlPath := sshControlPathPattern()
+	_ = os.MkdirAll(controlDir, 0700)
 
 	remoteCmd := r.buildRemoteCommand("session", "attach", sessionID)
 
 	sshArgs := []string{
 		"-t",
 		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
+		"-o", "ControlPath=" + controlPath,
 		"-o", "ControlPersist=600",
 		r.Host,
 		remoteCmd,

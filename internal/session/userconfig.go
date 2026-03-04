@@ -109,8 +109,18 @@ type UserConfig struct {
 	// Docker defines Docker sandbox settings for containerized sessions
 	Docker DockerSettings `toml:"docker"`
 
+	// Hosts defines SSH host configurations for remote session management
+	// These are simpler than [remotes] — just SSH destination + metadata
+	Hosts map[string]HostConfig `toml:"hosts"`
+
 	// Remotes defines named SSH remote agent-deck instances
 	Remotes map[string]RemoteConfig `toml:"remotes"`
+}
+
+type HostConfig struct {
+	SSHHost     string `toml:"ssh_host"` // SSH destination (must be in ~/.ssh/config or user@host)
+	Description string `toml:"description"`
+	DefaultPath string `toml:"default_path"` // Default CWD on remote
 }
 
 // RemoteConfig defines a remote agent-deck instance accessible via SSH.
