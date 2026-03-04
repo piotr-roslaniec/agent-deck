@@ -137,6 +137,63 @@ func TestCacheTTL(t *testing.T) {
 	if ok {
 		t.Error("expected cache miss after TTL")
 	}
+
+	cache.mu.Lock()
+	_, stillPresent := cache.entries["test"]
+	cache.mu.Unlock()
+	if stillPresent {
+		t.Error("expected expired cache entry to be purged")
+	}
+}
+
+func TestCacheMaxEntries_EvictsOldestEntry(t *testing.T) {
+	cache := &HostProbeCache{
+		entries:    make(map[string]cachedProbe),
+		maxEntries: 2,
+	}
+
+	oldest := HostProbeResult{Name: "oldest"}
+	newer := HostProbeResult{Name: "newer"}
+	cache.mu.Lock()
+	cache.entries["oldest"] = cachedProbe{result: oldest, at: time.Now().Add(-10 * time.Second)}
+	cache.entries["newer"] = cachedProbe{result: newer, at: time.Now().Add(-5 * time.Second)}
+	cache.mu.Unlock()
+
+	cache.Set("latest", HostProbeResult{Name: "latest"})
+
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if len(cache.entries) != 2 {
+		t.Fatalf("expected cache size 2, got %d", len(cache.entries))
+	}
+	if _, ok := cache.entries["oldest"]; ok {
+		t.Fatal("expected oldest entry to be evicted")
+	}
+	if _, ok := cache.entries["newer"]; !ok {
+		t.Fatal("expected newer entry to remain")
+	}
+	if _, ok := cache.entries["latest"]; !ok {
+		t.Fatal("expected latest entry to be added")
+	}
+}
+
+func TestCacheMaxEntries_UpdateExistingKeyDoesNotEvict(t *testing.T) {
+	cache := &HostProbeCache{
+		entries:    make(map[string]cachedProbe),
+		maxEntries: 1,
+	}
+
+	cache.Set("only", HostProbeResult{Name: "first"})
+	cache.Set("only", HostProbeResult{Name: "second"})
+
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if len(cache.entries) != 1 {
+		t.Fatalf("expected cache size 1, got %d", len(cache.entries))
+	}
+	if cache.entries["only"].result.Name != "second" {
+		t.Fatalf("expected cache update to keep latest value, got %q", cache.entries["only"].result.Name)
+	}
 }
 
 func TestCacheInvalidation(t *testing.T) {

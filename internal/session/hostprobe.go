@@ -112,9 +112,11 @@ func ParseProbeOutput(output string) (HostMetrics, error) {
 
 const defaultOverloadThreshold = 80.0
 const probeCacheTTL = 30 * time.Second
+const probeCacheMaxEntries = 256
 
 var hostProbeCache = &HostProbeCache{
-	entries: make(map[string]cachedProbe),
+	entries:    make(map[string]cachedProbe),
+	maxEntries: probeCacheMaxEntries,
 }
 
 type cachedProbe struct {
@@ -126,22 +128,70 @@ type HostProbeCache struct {
 	mu         sync.Mutex
 	entries    map[string]cachedProbe
 	configHash string
+	maxEntries int
 }
 
 func (c *HostProbeCache) Get(name string) (HostProbeResult, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	entry, ok := c.entries[name]
-	if !ok || time.Since(entry.at) > probeCacheTTL {
+	if !ok {
 		return HostProbeResult{}, false
 	}
+	if time.Since(entry.at) > probeCacheTTL {
+		delete(c.entries, name)
+		return HostProbeResult{}, false
+	}
+
 	return entry.result, true
 }
 
 func (c *HostProbeCache) Set(name string, result HostProbeResult) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries[name] = cachedProbe{result: result, at: time.Now()}
+
+	now := time.Now()
+	if _, exists := c.entries[name]; exists {
+		c.entries[name] = cachedProbe{result: result, at: now}
+		return
+	}
+
+	c.pruneExpiredLocked(now)
+	if len(c.entries) >= c.effectiveMaxEntriesLocked() {
+		c.evictOldestLocked()
+	}
+
+	c.entries[name] = cachedProbe{result: result, at: now}
+}
+
+func (c *HostProbeCache) effectiveMaxEntriesLocked() int {
+	if c.maxEntries > 0 {
+		return c.maxEntries
+	}
+	return probeCacheMaxEntries
+}
+
+func (c *HostProbeCache) evictOldestLocked() {
+	var oldestKey string
+	var oldestAt time.Time
+	for key, entry := range c.entries {
+		if oldestKey == "" || entry.at.Before(oldestAt) {
+			oldestKey = key
+			oldestAt = entry.at
+		}
+	}
+	if oldestKey != "" {
+		delete(c.entries, oldestKey)
+	}
+}
+
+func (c *HostProbeCache) pruneExpiredLocked(now time.Time) {
+	for key, entry := range c.entries {
+		if now.Sub(entry.at) > probeCacheTTL {
+			delete(c.entries, key)
+		}
+	}
 }
 
 func (c *HostProbeCache) InvalidateIfConfigChanged(hosts map[string]HostConfig) {
