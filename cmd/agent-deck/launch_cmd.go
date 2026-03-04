@@ -47,6 +47,14 @@ func handleLaunch(profile string, args []string) {
 		return nil
 	})
 
+	// Remote host flags
+	host := fs.String("host", "", "Configured host name (or 'auto')")
+	dryRun := fs.Bool("dry-run", false, "Show host selection matrix and exit without creating")
+	sshHost := fs.String("ssh", "", "SSH destination (launch does not support direct SSH; use add/start)")
+	sshRemotePath := fs.String("remote-path", "", "Remote working directory (requires --ssh)")
+	sandbox := fs.Bool("sandbox", false, "Run session in Docker sandbox (launch does not support sandbox)")
+	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (requires --sandbox)")
+
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume")
 
@@ -70,6 +78,8 @@ func handleLaunch(profile string, args []string) {
 		fmt.Println("  agent-deck launch . -c claude -m \"Fix bug\" --no-wait")
 		fmt.Println("  agent-deck launch . -c \"codex --dangerously-bypass-approvals-and-sandbox\"")
 		fmt.Println("  agent-deck launch . -g ard --no-parent -c claude -m \"Run review\"")
+		fmt.Println("  agent-deck launch --host beelink -c claude")
+		fmt.Println("  agent-deck launch --host auto --dry-run -c claude")
 	}
 
 	// Reorder args: move path to end so flags are parsed correctly
@@ -81,6 +91,48 @@ func handleLaunch(profile string, args []string) {
 
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
+
+	if *host != "" && *sshHost != "" {
+		out.Error("--host and --ssh cannot be used together", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if *host != "" && *sandbox {
+		out.Error("--host and --sandbox cannot be used together", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if *dryRun && *host == "" {
+		out.Error("--dry-run requires --host", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if *sshHost != "" {
+		out.Error("--ssh is not supported by launch (use add + session start)", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if *sshRemotePath != "" {
+		out.Error("--remote-path requires --ssh", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if *sandbox {
+		out.Error("--sandbox is not supported by launch (use add + session start)", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if *sandboxImage != "" {
+		out.Error("--sandbox-image requires --sandbox", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
+	selectedHost, err := resolveHostSelection(*host, *dryRun)
+	if err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if selectedHost != nil && *host == "auto" && !*dryRun {
+		fmt.Fprintf(os.Stderr, "Auto-selected host: %s (%s)\n", selectedHost.Name, selectedHost.Config.SSHHost)
+	}
+	if *dryRun {
+		printHostSelectionMatrix(selectedHost.ProbeResults, selectedHost.Name)
+		return
+	}
 
 	// Resolve path
 	path := strings.Trim(fs.Arg(0), "'\"")
@@ -100,15 +152,17 @@ func handleLaunch(profile string, args []string) {
 		}
 	}
 
-	// Verify path exists and is a directory
-	info, err := os.Stat(path)
-	if err != nil {
-		out.Error(fmt.Sprintf("path does not exist: %s", path), ErrCodeNotFound)
-		os.Exit(1)
-	}
-	if !info.IsDir() {
-		out.Error(fmt.Sprintf("path is not a directory: %s", path), ErrCodeInvalidOperation)
-		os.Exit(1)
+	// Verify path exists and is a directory (skip for configured remote host sessions)
+	if selectedHost == nil {
+		info, err := os.Stat(path)
+		if err != nil {
+			out.Error(fmt.Sprintf("path does not exist: %s", path), ErrCodeNotFound)
+			os.Exit(1)
+		}
+		if !info.IsDir() {
+			out.Error(fmt.Sprintf("path is not a directory: %s", path), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
 	}
 
 	// Merge flags
@@ -273,6 +327,10 @@ func handleLaunch(profile string, args []string) {
 		newInstance.WorktreeRepoRoot = worktreeRepoRoot
 		newInstance.WorktreeBranch = wtBranch
 	}
+	if selectedHost != nil {
+		newInstance.SSHHost = selectedHost.Config.SSHHost
+		newInstance.SSHRemotePath = selectedHost.Config.DefaultPath
+	}
 
 	if *resumeSession != "" {
 		newInstance.ClaudeSessionID = *resumeSession
@@ -390,6 +448,15 @@ func handleLaunch(profile string, args []string) {
 	if worktreePath != "" {
 		jsonData["worktree_path"] = worktreePath
 		jsonData["worktree_branch"] = wtBranch
+	}
+	if newInstance.SSHHost != "" {
+		jsonData["ssh_host"] = newInstance.SSHHost
+	}
+	if newInstance.SSHRemotePath != "" {
+		jsonData["ssh_remote_path"] = newInstance.SSHRemotePath
+	}
+	if selectedHost != nil {
+		jsonData["host_name"] = selectedHost.Name
 	}
 
 	msg := fmt.Sprintf("Launched session: %s", newInstance.Title)

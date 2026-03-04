@@ -11,8 +11,10 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -537,6 +539,7 @@ func reorderArgsForFlagParsing(args []string) []string {
 		"--sandbox-image":  true,
 		"--ssh":            true,
 		"--remote-path":    true,
+		"--host":           true,
 	}
 
 	var flags []string
@@ -676,6 +679,92 @@ func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) 
 	return groupSelector
 }
 
+type hostSelection struct {
+	Name         string
+	Config       session.HostConfig
+	ProbeResults []session.HostProbeResult
+}
+
+func resolveHostSelection(hostSelector string, includeMatrix bool) (*hostSelection, error) {
+	hostSelector = strings.TrimSpace(hostSelector)
+	if hostSelector == "" {
+		return nil, nil
+	}
+
+	config, err := session.LoadUserConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load user config: %w", err)
+	}
+	if len(config.Hosts) == 0 {
+		return nil, fmt.Errorf("no hosts configured (use 'agent-deck host add' first)")
+	}
+
+	needsProbe := includeMatrix || hostSelector == "auto"
+	var probeResults []session.HostProbeResult
+	if needsProbe {
+		prober := &session.SSHHostProber{}
+		probeResults = session.ProbeAllHosts(context.Background(), config.Hosts, prober)
+		sort.Slice(probeResults, func(i, j int) bool {
+			return probeResults[i].Name < probeResults[j].Name
+		})
+	}
+
+	if hostSelector == "auto" {
+		best, err := session.SelectBestHost(probeResults)
+		if err != nil {
+			return nil, err
+		}
+		return &hostSelection{
+			Name:         best.Name,
+			Config:       best.Config,
+			ProbeResults: probeResults,
+		}, nil
+	}
+
+	hostCfg, ok := config.Hosts[hostSelector]
+	if !ok {
+		return nil, fmt.Errorf("host '%s' not found in config", hostSelector)
+	}
+
+	return &hostSelection{
+		Name:         hostSelector,
+		Config:       hostCfg,
+		ProbeResults: probeResults,
+	}, nil
+}
+
+func printHostSelectionMatrix(results []session.HostProbeResult, selected string) {
+	if len(results) == 0 {
+		fmt.Fprintln(os.Stderr, "Host selection matrix: no probe data available")
+		return
+	}
+
+	fmt.Fprintln(os.Stderr, "Host selection matrix:")
+	w := tabwriter.NewWriter(os.Stderr, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SEL\tNAME\tSSH HOST\tCPU\tRAM\tDISK\tSTATUS")
+	for _, result := range results {
+		marker := " "
+		if result.Name == selected {
+			marker = "*"
+		}
+		if result.Err != nil {
+			fmt.Fprintf(w, "%s\t%s\t%s\t--\t--\t--\tunreachable\n",
+				marker, result.Name, result.Config.SSHHost)
+			continue
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%.0f%%\t%.0f%%\t%.0f%%\tok\n",
+			marker,
+			result.Name,
+			result.Config.SSHHost,
+			result.Metrics.CPUPercent,
+			result.Metrics.RAMPercent,
+			result.Metrics.DiskPercent,
+		)
+	}
+	_ = w.Flush()
+	fmt.Fprintf(os.Stderr, "\nSelected host: %s\n", selected)
+}
+
 // handleAdd adds a new session from CLI
 func handleAdd(profile string, args []string) {
 	fs := flag.NewFlagSet("add", flag.ExitOnError)
@@ -720,6 +809,8 @@ func handleAdd(profile string, args []string) {
 	// SSH remote flags
 	sshHost := fs.String("ssh", "", "SSH destination (e.g., user@host)")
 	sshRemotePath := fs.String("remote-path", "", "Remote working directory (used with --ssh)")
+	host := fs.String("host", "", "Configured host name (or 'auto')")
+	dryRun := fs.Bool("dry-run", false, "Show host selection matrix and exit without creating")
 
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume (skips new session creation)")
@@ -756,6 +847,8 @@ func handleAdd(profile string, args []string) {
 		fmt.Println("SSH Examples:")
 		fmt.Println("  agent-deck add --ssh user@host --remote-path ~/project -c claude")
 		fmt.Println("  agent-deck add --ssh user@host -c claude -t \"remote-dev\"")
+		fmt.Println("  agent-deck add --host beelink -c claude")
+		fmt.Println("  agent-deck add --host auto --dry-run -c claude")
 	}
 
 	// Reorder args: move path to end so flags are parsed correctly
@@ -790,6 +883,31 @@ func handleAdd(profile string, args []string) {
 	if sessionParent != "" && *noParent {
 		fmt.Println("Error: --parent and --no-parent cannot be used together")
 		os.Exit(1)
+	}
+	if *host != "" && *sshHost != "" {
+		fmt.Println("Error: --host and --ssh cannot be used together")
+		os.Exit(1)
+	}
+	if *host != "" && *sandbox {
+		fmt.Println("Error: --host and --sandbox cannot be used together")
+		os.Exit(1)
+	}
+	if *dryRun && *host == "" {
+		fmt.Println("Error: --dry-run requires --host")
+		os.Exit(1)
+	}
+
+	selectedHost, err := resolveHostSelection(*host, *dryRun)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+	if selectedHost != nil && *host == "auto" && !*dryRun {
+		fmt.Fprintf(os.Stderr, "Auto-selected host: %s (%s)\n", selectedHost.Name, selectedHost.Config.SSHHost)
+	}
+	if *dryRun {
+		printHostSelectionMatrix(selectedHost.ProbeResults, selectedHost.Name)
+		return
 	}
 
 	// Validate --resume-session requires Claude
@@ -875,7 +993,7 @@ func handleAdd(profile string, args []string) {
 	}
 
 	// Verify path exists and is a directory (skip for SSH remote sessions)
-	if *sshHost != "" {
+	if *sshHost != "" || selectedHost != nil {
 		// For SSH sessions, use CWD as local placeholder path (project lives on remote)
 		if path == "" {
 			path, err = os.Getwd()
@@ -1029,7 +1147,10 @@ func handleAdd(profile string, args []string) {
 	}
 
 	// Apply SSH remote config if requested.
-	if *sshHost != "" {
+	if selectedHost != nil {
+		newInstance.SSHHost = selectedHost.Config.SSHHost
+		newInstance.SSHRemotePath = selectedHost.Config.DefaultPath
+	} else if *sshHost != "" {
 		if *sandbox {
 			fmt.Println("Error: --ssh and --sandbox cannot be used together")
 			os.Exit(1)
@@ -1121,7 +1242,12 @@ func handleAdd(profile string, args []string) {
 		humanLines = append(humanLines, fmt.Sprintf("  Worktree: %s (branch: %s)", worktreePath, wtBranch))
 		humanLines = append(humanLines, fmt.Sprintf("  Repo:    %s", worktreeRepoRoot))
 	}
-	if *sshHost != "" {
+	if selectedHost != nil {
+		humanLines = append(humanLines, fmt.Sprintf("  Host:    %s (%s)", selectedHost.Name, newInstance.SSHHost))
+		if newInstance.SSHRemotePath != "" {
+			humanLines = append(humanLines, fmt.Sprintf("  Remote:  %s", newInstance.SSHRemotePath))
+		}
+	} else if *sshHost != "" {
 		humanLines = append(humanLines, fmt.Sprintf("  SSH:     %s", *sshHost))
 		if *sshRemotePath != "" {
 			humanLines = append(humanLines, fmt.Sprintf("  Remote:  %s", *sshRemotePath))
@@ -1169,6 +1295,15 @@ func handleAdd(profile string, args []string) {
 	}
 	if *resumeSession != "" {
 		jsonData["resume_session"] = *resumeSession
+	}
+	if newInstance.SSHHost != "" {
+		jsonData["ssh_host"] = newInstance.SSHHost
+	}
+	if newInstance.SSHRemotePath != "" {
+		jsonData["ssh_remote_path"] = newInstance.SSHRemotePath
+	}
+	if selectedHost != nil {
+		jsonData["host_name"] = selectedHost.Name
 	}
 	if *sandbox {
 		jsonData["sandbox"] = true
