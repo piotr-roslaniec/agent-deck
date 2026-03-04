@@ -148,10 +148,28 @@ func (c *ConfirmDialog) View() string {
 	var buttons string
 	var borderColor lipgloss.Color
 
-	// Styles (shared)
+	// Dialog width is capped for readability and constrained by terminal size.
+	dialogWidth := 50
+	if c.width > 0 && c.width < dialogWidth+10 {
+		dialogWidth = c.width - 10
+	}
+	if dialogWidth < 30 {
+		dialogWidth = 30
+	}
+	contentWidth := dialogWidth - 6
+	if contentWidth < 20 {
+		contentWidth = 20
+	}
+
+	// Shared content styles.
+	warningStyle := lipgloss.NewStyle().
+		Foreground(ColorYellow).
+		MarginBottom(1).
+		Width(contentWidth)
 	detailsStyle := lipgloss.NewStyle().
 		Foreground(ColorTextDim).
-		MarginBottom(1)
+		MarginBottom(1).
+		Width(contentWidth)
 
 	switch c.confirmType {
 	case ConfirmDeleteSession:
@@ -281,11 +299,6 @@ func (c *ConfirmDialog) View() string {
 		Foreground(borderColor).
 		MarginBottom(1)
 
-	// Warning style
-	warningStyle := lipgloss.NewStyle().
-		Foreground(ColorYellow).
-		MarginBottom(1)
-
 	// Build content
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		titleStyle.Render(title),
@@ -294,12 +307,6 @@ func (c *ConfirmDialog) View() string {
 		"",
 		buttons,
 	)
-
-	// Dialog box
-	dialogWidth := 50
-	if c.width > 0 && c.width < dialogWidth+10 {
-		dialogWidth = c.width - 10
-	}
 
 	dialogBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

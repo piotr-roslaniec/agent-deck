@@ -5980,15 +5980,22 @@ func (h *Home) View() string {
 
 	// Check minimum terminal size for usability
 	if h.width < minTerminalWidth || h.height < minTerminalHeight {
+		hint := "Resize the terminal and try again."
+		if h.width < minTerminalWidth && h.height >= minTerminalHeight {
+			hint = "Increase terminal width or reduce font size."
+		} else if h.height < minTerminalHeight && h.width >= minTerminalWidth {
+			hint = "Increase terminal height to show session list and preview."
+		}
 		return lipgloss.Place(
 			h.width, h.height,
 			lipgloss.Center, lipgloss.Center,
 			lipgloss.NewStyle().
 				Foreground(ColorYellow).
 				Render(fmt.Sprintf(
-					"Terminal too small (%dx%d)\nMinimum: %dx%d",
+					"Terminal too small (%dx%d)\nMinimum: %dx%d\n%s",
 					h.width, h.height,
 					minTerminalWidth, minTerminalHeight,
+					hint,
 				)),
 		)
 	}
