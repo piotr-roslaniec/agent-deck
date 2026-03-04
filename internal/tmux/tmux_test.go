@@ -2437,6 +2437,79 @@ func TestGetActiveSession(t *testing.T) {
 	}
 }
 
+func TestListNonAgentDeckSessionsFiltersPrefix(t *testing.T) {
+	orig := tmuxListSessionsOutput
+	t.Cleanup(func() {
+		tmuxListSessionsOutput = orig
+	})
+
+	tmuxListSessionsOutput = func() ([]byte, error) {
+		return []byte("agentdeck_alpha\nproject-shell\nagentdeck_beta\nops\n"), nil
+	}
+
+	sessions, err := ListNonAgentDeckSessions()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"project-shell", "ops"}, sessions)
+}
+
+func TestListNonAgentDeckSessionsNoServerRunning(t *testing.T) {
+	orig := tmuxListSessionsOutput
+	t.Cleanup(func() {
+		tmuxListSessionsOutput = orig
+	})
+
+	tmuxListSessionsOutput = func() ([]byte, error) {
+		return nil, fmt.Errorf("no server running on /tmp/tmux-1000/default")
+	}
+
+	sessions, err := ListNonAgentDeckSessions()
+	require.NoError(t, err)
+	assert.Empty(t, sessions)
+}
+
+func TestListRemoteSessionsParsesOutput(t *testing.T) {
+	orig := sshCommand
+	t.Cleanup(func() {
+		sshCommand = orig
+	})
+
+	var gotArgs []string
+	sshCommand = func(args ...string) *exec.Cmd {
+		gotArgs = append([]string(nil), args...)
+		return exec.Command("sh", "-c", "printf 'sess-1\\nsess-2\\n'")
+	}
+
+	sessions, err := ListRemoteSessions("devbox")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"sess-1", "sess-2"}, sessions)
+	require.NotEmpty(t, gotArgs)
+	assert.Equal(t, "devbox", gotArgs[len(gotArgs)-2])
+	assert.Equal(t, "tmux list-sessions -F '#{session_name}'", gotArgs[len(gotArgs)-1])
+}
+
+func TestCaptureRemotePaneQuotesSessionName(t *testing.T) {
+	orig := sshCommand
+	t.Cleanup(func() {
+		sshCommand = orig
+	})
+
+	var gotArgs []string
+	sshCommand = func(args ...string) *exec.Cmd {
+		gotArgs = append([]string(nil), args...)
+		return exec.Command("sh", "-c", "printf 'pane output'")
+	}
+
+	content, err := CaptureRemotePane("devbox", "my session's pane")
+	require.NoError(t, err)
+	assert.Equal(t, "pane output", content)
+	require.NotEmpty(t, gotArgs)
+	assert.Equal(
+		t,
+		fmt.Sprintf("tmux capture-pane -t %s -p -e -S -2000", shellQuoteForSSH("my session's pane")),
+		gotArgs[len(gotArgs)-1],
+	)
+}
+
 // --- splitIntoChunks tests ---
 
 func TestSplitIntoChunks_SmallContent(t *testing.T) {

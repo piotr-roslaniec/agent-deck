@@ -3277,6 +3277,149 @@ func ListAllSessions() ([]*Session, error) {
 	return sessions, nil
 }
 
+var tmuxListSessionsOutput = func() ([]byte, error) {
+	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}")
+	return cmd.Output()
+}
+
+var sshCommand = func(args ...string) *exec.Cmd {
+	return exec.Command("ssh", args...)
+}
+
+func sshSocketDir() string {
+	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
+		return filepath.Join(xdg, "agent-deck-ssh")
+	}
+	return "/tmp/agent-deck-ssh"
+}
+
+func sshControlPathPattern() string {
+	return filepath.Join(sshSocketDir(), "%C")
+}
+
+func shellQuoteForSSH(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+}
+
+func noTmuxSessions(err error) bool {
+	msg := strings.ToLower(err.Error())
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		msg += " " + strings.ToLower(string(exitErr.Stderr))
+	}
+	return strings.Contains(msg, "no server running") ||
+		strings.Contains(msg, "no sessions") ||
+		strings.Contains(msg, "failed to connect to server")
+}
+
+func parseSessionNames(output []byte, keep func(string) bool) []string {
+	trimmed := strings.TrimSpace(string(output))
+	if trimmed == "" {
+		return []string{}
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	sessions := make([]string, 0, len(lines))
+	for _, line := range lines {
+		name := strings.TrimSpace(line)
+		if name == "" {
+			continue
+		}
+		if keep(name) {
+			sessions = append(sessions, name)
+		}
+	}
+	return sessions
+}
+
+func runSSHCommand(sshHost, remoteCommand string) ([]byte, error) {
+	if strings.TrimSpace(sshHost) == "" {
+		return nil, errors.New("ssh host is required")
+	}
+
+	controlDir := sshSocketDir()
+	if err := os.MkdirAll(controlDir, 0o700); err != nil {
+		return nil, fmt.Errorf("failed to create ssh control directory: %w", err)
+	}
+
+	controlPath := sshControlPathPattern()
+	sshArgs := []string{
+		"-o", "ControlMaster=auto",
+		"-o", "ControlPath=" + controlPath,
+		"-o", "ControlPersist=600",
+		"-o", "ConnectTimeout=10",
+		"-o", "BatchMode=yes",
+		sshHost,
+		remoteCommand,
+	}
+
+	cmd := sshCommand(sshArgs...)
+	output, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			stderr := strings.TrimSpace(string(exitErr.Stderr))
+			if stderr != "" {
+				return nil, fmt.Errorf("ssh command failed: %w: %s", err, stderr)
+			}
+		}
+		return nil, fmt.Errorf("ssh command failed: %w", err)
+	}
+
+	return output, nil
+}
+
+// ListRemoteSessions returns all tmux sessions on the remote ssh host.
+func ListRemoteSessions(sshHost string) ([]string, error) {
+	output, err := runSSHCommand(sshHost, "tmux list-sessions -F '#{session_name}'")
+	if err != nil {
+		if noTmuxSessions(err) {
+			return []string{}, nil
+		}
+		return nil, fmt.Errorf("failed to list remote sessions on %s: %w", sshHost, err)
+	}
+
+	return parseSessionNames(output, func(string) bool { return true }), nil
+}
+
+// CaptureRemotePane captures up to 2000 lines from a remote tmux session pane.
+func CaptureRemotePane(sshHost, session string) (string, error) {
+	if strings.TrimSpace(session) == "" {
+		return "", errors.New("session is required")
+	}
+
+	remoteCommand := fmt.Sprintf(
+		"tmux capture-pane -t %s -p -e -S -2000",
+		shellQuoteForSSH(session),
+	)
+	output, err := runSSHCommand(sshHost, remoteCommand)
+	if err != nil {
+		return "", fmt.Errorf(
+			"failed to capture remote pane for %s on %s: %w",
+			session,
+			sshHost,
+			err,
+		)
+	}
+
+	return string(output), nil
+}
+
+// ListNonAgentDeckSessions lists local tmux sessions excluding agent-deck sessions.
+func ListNonAgentDeckSessions() ([]string, error) {
+	output, err := tmuxListSessionsOutput()
+	if err != nil {
+		if noTmuxSessions(err) {
+			return []string{}, nil
+		}
+		return nil, fmt.Errorf("failed to list sessions: %w", err)
+	}
+
+	return parseSessionNames(output, func(name string) bool {
+		return !strings.HasPrefix(name, SessionPrefix)
+	}), nil
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Log Management Functions
 // ═══════════════════════════════════════════════════════════════════════════
