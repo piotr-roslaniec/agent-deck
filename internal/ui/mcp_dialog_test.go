@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -73,5 +74,49 @@ func TestMCPDialog_TypeJumpResetOnScopeSwitch(t *testing.T) {
 	_, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
 	if dialog.globalAvailableIdx != 0 {
 		t.Fatalf("expected jump in global list to zeta (index 0), got %d", dialog.globalAvailableIdx)
+	}
+}
+
+func TestMCPDialog_SelectedItem(t *testing.T) {
+	dialog := NewMCPDialog()
+	dialog.visible = true
+	dialog.scope = MCPScopeLocal
+	dialog.column = MCPColumnAttached
+	dialog.localAttached = []MCPItem{
+		{Name: "alpha"},
+		{Name: "beta"},
+	}
+	dialog.localAttachedIdx = 1
+
+	item, ok := dialog.SelectedItem()
+	if !ok {
+		t.Fatal("expected selected item to be available")
+	}
+	if item.Name != "beta" {
+		t.Fatalf("expected selected item beta, got %q", item.Name)
+	}
+}
+
+func TestMCPDialog_ViewShowsPermanentFailureIndicatorAndResetHint(t *testing.T) {
+	dialog := NewMCPDialog()
+	dialog.visible = true
+	dialog.tool = "claude"
+	dialog.scope = MCPScopeLocal
+	dialog.column = MCPColumnAttached
+	dialog.width = 120
+	dialog.height = 40
+	dialog.localAttached = []MCPItem{
+		{Name: "broken-mcp", Transport: "stdio", PoolStatus: "permanently_failed"},
+	}
+
+	view := dialog.View()
+	if !strings.Contains(view, "Ctrl+R") || !strings.Contains(view, "reset failed stdio") {
+		t.Fatalf("expected reset hint in dialog view, got:\n%s", view)
+	}
+	if !strings.Contains(view, "‼=perma-failed") {
+		t.Fatalf("expected permanent failure legend in dialog view, got:\n%s", view)
+	}
+	if !strings.Contains(view, "[S]‼") {
+		t.Fatalf("expected permanent failure item marker in dialog view, got:\n%s", view)
 	}
 }

@@ -4762,6 +4762,14 @@ func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 // handleMCPDialogKey handles keys when MCP dialog is visible
 func (h *Home) handleMCPDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "ctrl+r":
+		if err := h.resetSelectedFailedMCP(); err != nil {
+			h.mcpDialog.SetError(err)
+			return h, nil
+		}
+		h.mcpDialog.SetError(nil)
+		return h, nil
+
 	case "enter":
 		// DEBUG: Log entry point
 		mcpUILog.Debug("dialog_enter_pressed")
@@ -4819,6 +4827,35 @@ func (h *Home) handleMCPDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.mcpDialog.Update(msg)
 		return h, nil
 	}
+}
+
+func (h *Home) resetSelectedFailedMCP() error {
+	item, ok := h.mcpDialog.SelectedItem()
+	if !ok {
+		return fmt.Errorf("no MCP selected")
+	}
+	if item.Transport != "stdio" {
+		return fmt.Errorf("manual reset is only available for stdio MCPs")
+	}
+
+	pool := session.GetGlobalPool()
+	if pool == nil {
+		return fmt.Errorf("MCP pool is not available")
+	}
+
+	if err := pool.ResetPermanentlyFailedProxy(item.Name); err != nil {
+		return err
+	}
+
+	status := "running"
+	for _, info := range pool.ListServers() {
+		if info.Name == item.Name {
+			status = info.Status
+			break
+		}
+	}
+	h.mcpDialog.UpdatePoolStatus(item.Name, status)
+	return nil
 }
 
 // handleSkillDialogKey handles keys when Skills dialog is visible

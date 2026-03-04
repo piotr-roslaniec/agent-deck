@@ -39,6 +39,7 @@ type MCPItem struct {
 	Description  string
 	IsOrphan     bool   // True if MCP is attached but not in config.toml pool
 	IsPooled     bool   // True if this MCP uses socket pool
+	PoolStatus   string // For stdio MCPs: running, failed, permanently_failed, etc.
 	Transport    string // "stdio", "http", or "sse"
 	HTTPStatus   string // For HTTP MCPs: "running", "stopped", "external", etc.
 	HasServerCfg bool   // True if HTTP MCP has [mcps.X.server] config
@@ -109,6 +110,12 @@ func (m *MCPDialog) Show(projectPath string, sessionID string, tool string) erro
 	// Build items lookup for descriptions, transport, and pool status
 	pool := session.GetGlobalPool()
 	httpPool := session.GetGlobalHTTPPool()
+	poolStatuses := make(map[string]string)
+	if pool != nil {
+		for _, info := range pool.ListServers() {
+			poolStatuses[info.Name] = info.Status
+		}
+	}
 	itemsMap := make(map[string]MCPItem)
 	for _, name := range allNames {
 		def, ok := availableMCPs[name]
@@ -142,7 +149,21 @@ func (m *MCPDialog) Show(projectPath string, sessionID string, tool string) erro
 			}
 		} else {
 			// stdio MCP - check socket pool
-			isPooled = pool != nil && pool.ShouldPool(name) && pool.IsRunning(name)
+			poolStatus := ""
+			if pool != nil && pool.ShouldPool(name) {
+				poolStatus = poolStatuses[name]
+				isPooled = poolStatus == "running"
+			}
+			itemsMap[name] = MCPItem{
+				Name:         name,
+				Description:  desc,
+				IsPooled:     isPooled,
+				PoolStatus:   poolStatus,
+				Transport:    transport,
+				HTTPStatus:   httpStatus,
+				HasServerCfg: hasServerCfg,
+			}
+			continue
 		}
 
 		itemsMap[name] = MCPItem{
@@ -367,6 +388,36 @@ func (m *MCPDialog) GetSessionID() string {
 // GetError returns any error that occurred
 func (m *MCPDialog) GetError() error {
 	return m.err
+}
+
+func (m *MCPDialog) SetError(err error) {
+	m.err = err
+}
+
+func (m *MCPDialog) SelectedItem() (MCPItem, bool) {
+	list, idx := m.getCurrentList()
+	if len(*list) == 0 || *idx < 0 || *idx >= len(*list) {
+		return MCPItem{}, false
+	}
+	return (*list)[*idx], true
+}
+
+func (m *MCPDialog) UpdatePoolStatus(name, status string) {
+	update := func(items *[]MCPItem) {
+		for i := range *items {
+			if (*items)[i].Name == name && (*items)[i].Transport == "stdio" {
+				(*items)[i].PoolStatus = status
+				(*items)[i].IsPooled = status == "running"
+			}
+		}
+	}
+
+	update(&m.localAttached)
+	update(&m.localAvailable)
+	update(&m.globalAttached)
+	update(&m.globalAvailable)
+	update(&m.userAttached)
+	update(&m.userAvailable)
 }
 
 // SetSize sets the dialog size
@@ -755,9 +806,9 @@ func (m *MCPDialog) View() string {
 	hintStyle := lipgloss.NewStyle().Foreground(ColorComment)
 	var hint string
 	if m.tool == "gemini" {
-		hint = hintStyle.Render("←→ column │ Type jump │ Space move │ Enter apply │ Esc cancel")
+		hint = hintStyle.Render("←→ column │ Type jump │ Space move │ Ctrl+R reset failed stdio │ Enter apply │ Esc cancel")
 	} else {
-		hint = hintStyle.Render("Tab scope │ ←→ column │ Type jump │ Space move │ Enter apply │ Esc cancel")
+		hint = hintStyle.Render("Tab scope │ ←→ column │ Type jump │ Space move │ Ctrl+R reset failed stdio │ Enter apply │ Esc cancel")
 	}
 	if m.typeJumpBuf != "" && time.Now().Before(m.typeJumpUntil) {
 		hint += lipgloss.NewStyle().Foreground(ColorTextDim).Render("  (" + m.typeJumpBuf + ")")
@@ -786,7 +837,7 @@ func (m *MCPDialog) View() string {
 
 	// Transport legend
 	transportLegend := lipgloss.NewStyle().Foreground(ColorTextDim).Render(
-		"[S]=stdio  [H]=http  [E]=sse  ●=running  ○=external  ✗=stopped")
+		"[S]=stdio  [H]=http  [E]=sse  ●=running  ○=external  ✗=stopped/failed  ‼=perma-failed")
 
 	// Responsive dialog width
 	dialogWidth := 64
@@ -920,10 +971,19 @@ func (m *MCPDialog) renderColumn(title string, items []MCPItem, selectedIdx int,
 				prefix = "[E]"
 			default:
 				// stdio - add pool indicator
-				if item.IsPooled {
+				switch item.PoolStatus {
+				case "running":
 					prefix += "●" // Green dot for pooled
-				} else {
-					prefix += " "
+				case "permanently_failed":
+					prefix += "‼"
+				case "failed", "stopped":
+					prefix += "✗"
+				default:
+					if item.IsPooled {
+						prefix += "●"
+					} else {
+						prefix += " "
+					}
 				}
 			}
 

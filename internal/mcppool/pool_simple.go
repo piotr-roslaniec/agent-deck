@@ -157,6 +157,33 @@ func (p *Pool) RestartProxy(name string) error {
 	return nil
 }
 
+// ResetPermanentlyFailedProxy clears failure/rate-limit state for a permanently
+// failed proxy and immediately attempts a fresh restart.
+func (p *Pool) ResetPermanentlyFailedProxy(name string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	proxy, exists := p.proxies[name]
+	if !exists {
+		return fmt.Errorf("proxy %s not found", name)
+	}
+
+	status := proxy.GetStatus()
+	if status != StatusPermanentlyFailed {
+		return fmt.Errorf("proxy %s is not permanently failed (status: %s)", name, status)
+	}
+
+	clearProxyFailureTracking(proxy)
+	proxy.SetStatus(StatusFailed)
+	poolLog.Info("manual_reset", slog.String("mcp", name))
+
+	if err := p.restartProxyWithRateLimitLocked(name, time.Now()); err != nil {
+		return fmt.Errorf("failed to restart proxy %s after reset: %w", name, err)
+	}
+
+	return nil
+}
+
 func (p *Pool) GetURL(name string) string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -298,6 +325,20 @@ func (p *Pool) RestartProxyWithRateLimit(name string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	return p.restartProxyWithRateLimitLocked(name, time.Now())
+}
+
+func clearProxyFailureTracking(proxy *SocketProxy) {
+	proxy.totalFailures = 0
+	proxy.restartCount = 0
+	proxy.lastRestart = time.Time{}
+	proxy.restartWindow = nil
+	proxy.statusMu.Lock()
+	proxy.successSince = time.Time{}
+	proxy.statusMu.Unlock()
+}
+
+func (p *Pool) restartProxyWithRateLimitLocked(name string, now time.Time) error {
 	proxy, exists := p.proxies[name]
 	if !exists {
 		return fmt.Errorf("proxy %s not found", name)
@@ -314,8 +355,6 @@ func (p *Pool) RestartProxyWithRateLimit(name string) error {
 		proxy.SetStatus(StatusPermanentlyFailed)
 		return fmt.Errorf("proxy %s permanently disabled after %d failures", name, proxy.totalFailures)
 	}
-
-	now := time.Now()
 
 	// Rate limit: minimum 5 seconds between restarts
 	if !proxy.lastRestart.IsZero() && now.Sub(proxy.lastRestart) < minRestartInterval {

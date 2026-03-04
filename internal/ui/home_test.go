@@ -744,6 +744,69 @@ func TestRenderHelpBarCompactWithGroup(t *testing.T) {
 	}
 }
 
+func TestHomeMCPDialogCtrlRRequiresSelection(t *testing.T) {
+	home := NewHome()
+	home.mcpDialog.visible = true
+	home.mcpDialog.scope = MCPScopeLocal
+	home.mcpDialog.column = MCPColumnAttached
+
+	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	h, ok := model.(*Home)
+	if !ok {
+		t.Fatal("Update should return *Home")
+	}
+	if h.mcpDialog.GetError() == nil {
+		t.Fatal("expected dialog error when no MCP is selected")
+	}
+	if !strings.Contains(h.mcpDialog.GetError().Error(), "no MCP selected") {
+		t.Fatalf("unexpected error: %v", h.mcpDialog.GetError())
+	}
+}
+
+func TestHomeMCPDialogCtrlRRejectsNonStdioMCP(t *testing.T) {
+	home := NewHome()
+	home.mcpDialog.visible = true
+	home.mcpDialog.scope = MCPScopeLocal
+	home.mcpDialog.column = MCPColumnAttached
+	home.mcpDialog.localAttached = []MCPItem{
+		{Name: "http-mcp", Transport: "http"},
+	}
+
+	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	h, ok := model.(*Home)
+	if !ok {
+		t.Fatal("Update should return *Home")
+	}
+	if h.mcpDialog.GetError() == nil {
+		t.Fatal("expected dialog error for non-stdio MCP")
+	}
+	if !strings.Contains(h.mcpDialog.GetError().Error(), "only available for stdio MCPs") {
+		t.Fatalf("unexpected error: %v", h.mcpDialog.GetError())
+	}
+}
+
+func TestHomeMCPDialogCtrlRReportsMissingPool(t *testing.T) {
+	home := NewHome()
+	home.mcpDialog.visible = true
+	home.mcpDialog.scope = MCPScopeLocal
+	home.mcpDialog.column = MCPColumnAttached
+	home.mcpDialog.localAttached = []MCPItem{
+		{Name: "stdio-mcp", Transport: "stdio", PoolStatus: "permanently_failed"},
+	}
+
+	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	h, ok := model.(*Home)
+	if !ok {
+		t.Fatal("Update should return *Home")
+	}
+	if h.mcpDialog.GetError() == nil {
+		t.Fatal("expected dialog error when pool is unavailable")
+	}
+	if !strings.Contains(h.mcpDialog.GetError().Error(), "MCP pool is not available") {
+		t.Fatalf("unexpected error: %v", h.mcpDialog.GetError())
+	}
+}
+
 func TestHomeViewNarrowTerminal(t *testing.T) {
 	tests := []struct {
 		name          string
