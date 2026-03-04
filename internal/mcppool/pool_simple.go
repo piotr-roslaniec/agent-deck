@@ -270,7 +270,7 @@ func (p *Pool) restartFailedProxies() {
 // a proxy is permanently disabled. This prevents infinite restart loops for
 // broken MCPs (e.g., removed npm packages) from leaking memory.
 const (
-	maxTotalRestartFailures = 10
+	maxTotalRestartFailures = 5
 	minRestartInterval      = 5 * time.Second
 	maxRestartsPerMinute    = 3
 	restartWindowDuration   = time.Minute
