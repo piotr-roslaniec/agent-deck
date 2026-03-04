@@ -387,6 +387,7 @@ See [TUI Reference](skills/agent-deck/references/tui-reference.md) for all short
 | [CLI Reference](skills/agent-deck/references/cli-reference.md) | Commands, flags, scripting examples |
 | [Configuration](skills/agent-deck/references/config-reference.md) | config.toml, MCP setup, custom tools, socket pool, skills registry paths, docker |
 | [Docker Sandbox](skills/agent-deck/references/sandbox.md) | Containers, overlays, custom images, troubleshooting |
+| [Remote Session Security](skills/agent-deck/references/remote-session-security-model.md) | Threat model, SSH/socket protections, config permission requirements |
 | [TUI Reference](skills/agent-deck/references/tui-reference.md) | Keyboard shortcuts, status indicators, navigation |
 | [Troubleshooting](skills/agent-deck/references/troubleshooting.md) | Common issues, debugging, recovery, uninstalling |
 
