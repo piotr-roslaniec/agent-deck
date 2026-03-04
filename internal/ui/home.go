@@ -84,6 +84,9 @@ const (
 	// clearOnCompactCooldown - minimum time between /clear sends for the same session
 	// Prevents repeated /clear if context fills up again quickly
 	clearOnCompactCooldown = 60 * time.Second
+
+	adoptedForkUnsupportedMsg    = "Fork not supported for adopted sessions: remote paths don't exist locally."
+	adoptedRestartUnsupportedMsg = "Restart not supported for adopted sessions. Delete and re-adopt instead."
 )
 
 // UI spacing constants (2-char grid system)
@@ -3930,6 +3933,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					tmuxSess := item.Session.GetTmuxSession()
 					if tmuxSess != nil && tmuxSess.IsPaneDead() {
 						if !h.hasActiveAnimation(item.Session.ID) {
+							if !h.ensureRestartSupported(item.Session) {
+								return h, nil
+							}
 							h.resumingSessions[item.Session.ID] = time.Now()
 							return h, h.restartSession(item.Session)
 						}
@@ -3940,6 +3946,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				// Session exited (tmux session gone) — auto-restart it.
 				if !h.hasActiveAnimation(item.Session.ID) {
+					if !h.ensureRestartSupported(item.Session) {
+						return h, nil
+					}
 					h.resumingSessions[item.Session.ID] = time.Now()
 					return h, h.restartSession(item.Session)
 				}
@@ -4077,7 +4086,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					h.setError(fmt.Errorf("session is starting, please wait..."))
 					return h, nil
 				}
-				if item.Session.CanFork() {
+				if !h.ensureForkSupported(item.Session) {
+					return h, nil
+				}
+				if h.canForkSession(item.Session) {
 					return h, h.quickForkSession(item.Session)
 				}
 			}
@@ -4095,7 +4107,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					h.setError(fmt.Errorf("session is starting, please wait..."))
 					return h, nil
 				}
-				if item.Session.CanFork() {
+				if !h.ensureForkSupported(item.Session) {
+					return h, nil
+				}
+				if h.canForkSession(item.Session) {
 					return h, h.forkSessionWithDialog(item.Session)
 				}
 			}
@@ -4410,6 +4425,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// If session is running, it needs restart to apply
 				if inst.GetStatusThreadSafe() == session.StatusRunning ||
 					inst.GetStatusThreadSafe() == session.StatusWaiting {
+					if !h.ensureRestartSupported(inst) {
+						return h, nil
+					}
 					h.resumingSessions[inst.ID] = time.Now()
 					return h, h.restartSession(inst)
 				}
@@ -4425,6 +4443,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// Block restart during animations to prevent concurrent restarts
 				if h.hasActiveAnimation(item.Session.ID) {
 					h.setError(fmt.Errorf("session is starting, please wait..."))
+					return h, nil
+				}
+				if !h.ensureRestartSupported(item.Session) {
 					return h, nil
 				}
 				if item.Session.CanRestart() {
@@ -4812,6 +4833,10 @@ func (h *Home) handleMCPDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			if targetInst != nil {
 				mcpUILog.Debug("dialog_restarting_session", slog.String("session_id", targetInst.ID))
+				if !h.ensureRestartSupported(targetInst) {
+					h.mcpDialog.Hide()
+					return h, nil
+				}
 				// Track as MCP loading for animation in preview pane
 				h.mcpLoadingSessions[targetInst.ID] = time.Now()
 				// Set flag to skip MCP regeneration (Apply just wrote the config)
@@ -4881,6 +4906,10 @@ func (h *Home) handleSkillDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			sessionID := h.skillDialog.GetSessionID()
 			targetInst := h.getInstanceByID(sessionID)
 			if targetInst != nil && targetInst.Tool == "claude" {
+				if !h.ensureRestartSupported(targetInst) {
+					h.skillDialog.Hide()
+					return h, nil
+				}
 				h.skillDialog.Hide()
 				return h, h.restartSession(targetInst)
 			}
@@ -5036,6 +5065,10 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				source := item.Session
+				if !h.ensureForkSupported(source) {
+					h.forkDialog.Hide()
+					return h, nil
+				}
 
 				// Resolve worktree target if enabled; actual creation runs in async command.
 				if worktreeEnabled && branchName != "" {
@@ -5455,10 +5488,33 @@ func (h *Home) quickForkSession(source *session.Instance) tea.Cmd {
 	if source == nil {
 		return nil
 	}
+	if !h.ensureForkSupported(source) {
+		return nil
+	}
 	// Use source title with " (fork)" suffix
 	title := source.Title + " (fork)"
 	groupPath := source.GroupPath
 	return h.forkSessionCmd(source, title, groupPath)
+}
+
+func (h *Home) canForkSession(inst *session.Instance) bool {
+	return inst != nil && !inst.Adopted && inst.CanFork()
+}
+
+func (h *Home) ensureForkSupported(inst *session.Instance) bool {
+	if inst != nil && inst.Adopted {
+		h.setError(fmt.Errorf(adoptedForkUnsupportedMsg))
+		return false
+	}
+	return true
+}
+
+func (h *Home) ensureRestartSupported(inst *session.Instance) bool {
+	if inst != nil && inst.Adopted {
+		h.setError(fmt.Errorf(adoptedRestartUnsupportedMsg))
+		return false
+	}
+	return true
 }
 
 // quickCreateSession creates a session instantly with auto-generated name and smart defaults.
@@ -5588,6 +5644,9 @@ func (h *Home) forkSessionWithDialog(source *session.Instance) tea.Cmd {
 	if source == nil {
 		return nil
 	}
+	if !h.ensureForkSupported(source) {
+		return nil
+	}
 	// Pre-populate dialog with source session info
 	h.forkDialog.Show(source.Title, source.ProjectPath, source.GroupPath)
 	return nil
@@ -5608,6 +5667,9 @@ func (h *Home) forkSessionCmdWithOptions(
 	sandboxEnabled bool,
 ) tea.Cmd {
 	if source == nil {
+		return nil
+	}
+	if !h.ensureForkSupported(source) {
 		return nil
 	}
 
@@ -5718,6 +5780,13 @@ type mcpRestartedMsg struct {
 
 // restartSession restarts a dead/errored session by creating a new tmux session.
 func (h *Home) restartSession(inst *session.Instance) tea.Cmd {
+	if inst == nil {
+		return nil
+	}
+	if !h.ensureRestartSupported(inst) {
+		return nil
+	}
+
 	id := inst.ID
 	mcpUILog.Debug(
 		"restart_session_called",
@@ -7092,7 +7161,7 @@ func (h *Home) renderHelpBarMinimal() string {
 			contextKeys = keyStyle.Render("⏎") + " " + keyStyle.Render("n") + " " + keyStyle.Render("N") + " " + keyStyle.Render("g")
 		} else {
 			contextKeys = keyStyle.Render("⏎") + " " + keyStyle.Render("n") + " " + keyStyle.Render("N") + " " + keyStyle.Render("R")
-			if item.Session != nil && item.Session.CanFork() {
+			if item.Session != nil && h.canForkSession(item.Session) {
 				contextKeys += " " + keyStyle.Render("f")
 			}
 			if item.Session != nil && (item.Session.Tool == "claude" || item.Session.Tool == "gemini") {
@@ -7153,7 +7222,7 @@ func (h *Home) renderHelpBarCompact() string {
 				h.helpKeyShort("n/N", "New"),
 				h.helpKeyShort("R", "Restart"),
 			}
-			if item.Session != nil && item.Session.CanFork() {
+			if item.Session != nil && h.canForkSession(item.Session) {
 				contextHints = append(contextHints, h.helpKeyShort("f", "Fork"))
 			}
 			if item.Session != nil && (item.Session.Tool == "claude" || item.Session.Tool == "gemini") {
@@ -7258,7 +7327,7 @@ func (h *Home) renderHelpBarFull() string {
 				h.helpKey("R", "Restart"),
 			}
 			// Only show fork hints if session has a valid Claude session ID
-			if item.Session != nil && item.Session.CanFork() {
+			if item.Session != nil && h.canForkSession(item.Session) {
 				primaryHints = append(primaryHints, h.helpKey("f/F", "Fork"))
 			}
 			// Show MCP Manager and preview mode toggle for Claude and Gemini sessions
@@ -8482,7 +8551,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		}
 
 		// Fork hint when session can be forked
-		if selected.CanFork() {
+		if h.canForkSession(selected) {
 			hintStyle := lipgloss.NewStyle().Foreground(ColorText).Italic(true)
 			keyStyle := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
 			b.WriteString(hintStyle.Render("Fork:    "))
@@ -8570,7 +8639,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			}
 
 			// Fork hint for OpenCode
-			if selected.CanFork() {
+			if h.canForkSession(selected) {
 				renderForkHintLine(&b)
 			}
 		} else {

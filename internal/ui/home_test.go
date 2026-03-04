@@ -788,6 +788,33 @@ func TestRenderHelpBarCompactWithSession(t *testing.T) {
 	}
 }
 
+func TestRenderHelpBarCompactAdoptedSessionHidesFork(t *testing.T) {
+	home := NewHome()
+	home.width = 85
+	home.height = 30
+
+	adopted := session.NewAdoptedInstance(
+		"Adopted Session",
+		"/tmp/project",
+		session.DefaultGroupPath,
+		"claude",
+		"dev@host",
+		"legacy-session",
+	)
+	adopted.ClaudeSessionID = "session-abc"
+	adopted.ClaudeDetectedAt = time.Now()
+
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: adopted},
+	}
+	home.cursor = 0
+
+	result := home.renderHelpBar()
+	if strings.Contains(result, "Fork") {
+		t.Fatalf("compact help bar should hide fork for adopted sessions, got: %q", result)
+	}
+}
+
 func TestRenderHelpBarCompactWithGroup(t *testing.T) {
 	home := NewHome()
 	home.width = 85 // Compact mode (70-99)
@@ -1138,5 +1165,69 @@ func TestRestartSessionCmdSessionMissingReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(restarted.err.Error(), "session no longer exists") {
 		t.Fatalf("unexpected error: %v", restarted.err)
+	}
+}
+
+func TestHomeUpdateForkKeyBlocksAdoptedSession(t *testing.T) {
+	home := NewHome()
+	adopted := session.NewAdoptedInstance(
+		"adopted-fork-test",
+		"/tmp/project",
+		session.DefaultGroupPath,
+		"claude",
+		"dev@host",
+		"legacy-session",
+	)
+	adopted.ClaudeSessionID = "session-abc"
+	adopted.ClaudeDetectedAt = time.Now()
+
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: adopted},
+	}
+	home.cursor = 0
+
+	model, cmd := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	h := model.(*Home)
+
+	if cmd != nil {
+		t.Fatal("expected no command when fork is blocked for adopted session")
+	}
+	if h.err == nil {
+		t.Fatal("expected error when forking adopted session")
+	}
+	if h.err.Error() != adoptedForkUnsupportedMsg {
+		t.Fatalf("unexpected error: %q", h.err.Error())
+	}
+}
+
+func TestHomeUpdateRestartKeyBlocksAdoptedSession(t *testing.T) {
+	home := NewHome()
+	adopted := session.NewAdoptedInstance(
+		"adopted-restart-test",
+		"/tmp/project",
+		session.DefaultGroupPath,
+		"claude",
+		"dev@host",
+		"legacy-session",
+	)
+	adopted.ClaudeSessionID = "session-abc"
+	adopted.ClaudeDetectedAt = time.Now()
+
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: adopted},
+	}
+	home.cursor = 0
+
+	model, cmd := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	h := model.(*Home)
+
+	if cmd != nil {
+		t.Fatal("expected no command when restart is blocked for adopted session")
+	}
+	if h.err == nil {
+		t.Fatal("expected error when restarting adopted session")
+	}
+	if h.err.Error() != adoptedRestartUnsupportedMsg {
+		t.Fatalf("unexpected error: %q", h.err.Error())
 	}
 }
